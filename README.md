@@ -11,6 +11,30 @@ non-interactive environments.
 > [!WARNING]
 > yaqt is a work in progress and is not yet ready for use.
 
+## Usage
+
+List the stable Qt versions advertised for the current platform's desktop
+repository:
+
+```console
+$ yaqt list-qt
+6.8.0
+6.8.1
+...
+6.12.0
+```
+
+Select another repository explicitly when needed:
+
+```console
+$ yaqt list-qt --host all_os --target wasm
+```
+
+The command prints stable Qt 6.8.0 or newer releases, one version per line in
+ascending order. It reads the Qt server's directory index; architecture and
+package availability are validated later when a specific version is selected
+for installation.
+
 ## Relationship to Qt
 
 yaqt is an independent community project. It is not affiliated with, endorsed

@@ -1,0 +1,18 @@
+version: "3"
+
+tasks:
+  default:
+    desc: List all available tasks
+    cmds:
+      - task --list --sort none
+
+  format:
+    desc: Format the codebase
+    cmds:
+      - go tool goimports -local github.com/zengxs/yaqt -w .
+      - go tool gofumpt -w .
+
+  build:
+    desc: Build the project
+    cmds:
+      - go build -o ./dist/yaqt ./cmd/yaqt

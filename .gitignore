@@ -96,3 +96,5 @@ go.work.sum
 ### Project specific ###
 .task/
 .tmp/
+dist/
+*.log
