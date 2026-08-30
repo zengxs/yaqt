@@ -13,6 +13,29 @@ type Version struct {
 	Patch int
 }
 
+// ParseVersion parses a stable Qt version in MAJOR.MINOR.PATCH form.
+func ParseVersion(value string) (Version, error) {
+	normalized := strings.TrimSpace(value)
+	parts := strings.Split(normalized, ".")
+	if len(parts) != 3 {
+		return Version{}, fmt.Errorf("invalid Qt version %q (expected MAJOR.MINOR.PATCH)", value)
+	}
+
+	numbers := make([]int, len(parts))
+	for index, part := range parts {
+		number, err := strconv.Atoi(part)
+		if err != nil || number < 0 {
+			return Version{}, fmt.Errorf("invalid Qt version %q (expected MAJOR.MINOR.PATCH)", value)
+		}
+		numbers[index] = number
+	}
+	version := Version{Major: numbers[0], Minor: numbers[1], Patch: numbers[2]}
+	if version.Major == 0 || version.String() != normalized {
+		return Version{}, fmt.Errorf("invalid Qt version %q (expected MAJOR.MINOR.PATCH)", value)
+	}
+	return version, nil
+}
+
 func (v Version) String() string {
 	return fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
 }
@@ -25,6 +48,10 @@ func (v Version) compare(other Version) int {
 		return compareInt(v.Minor, other.Minor)
 	}
 	return compareInt(v.Patch, other.Patch)
+}
+
+func (v Version) compact() string {
+	return fmt.Sprintf("%d%d%d", v.Major, v.Minor, v.Patch)
 }
 
 type repositoryEntry struct {

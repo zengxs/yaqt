@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<Updates>
+  <PackageUpdate>
+    <Name>qt.qt6.681.android_x86_64</Name>
+    <Version>6.8.1-0-202411221531</Version>
+    <DownloadableArchives>qtbase-Linux-RHEL_8_10-Clang-Android-Android_ANY-X86_64.7z</DownloadableArchives>
+  </PackageUpdate>
+</Updates>

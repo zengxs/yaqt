@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<Updates>
+  <PackageUpdate>
+    <Name>qt.qt6.6120.android_x86_64</Name>
+    <Version>6.12.0-0-202608181439</Version>
+    <DownloadableArchives>qtbase-MacOS-Android-X86_64.7z, qtdoc-MacOS-Android-X86_64.7z</DownloadableArchives>
+    <Operations>
+      <Operation name="Extract">
+        <Argument>@TargetDir@/6.12.0/android_x86_64</Argument>
+        <Argument>qtbase-MacOS-Android-X86_64.7z</Argument>
+      </Operation>
+      <Operation name="Extract">
+        <Argument>@TargetDir@/6.12.0/android_x86_64</Argument>
+        <Argument>qtdoc-MacOS-Android-X86_64.7z</Argument>
+      </Operation>
+    </Operations>
+  </PackageUpdate>
+</Updates>

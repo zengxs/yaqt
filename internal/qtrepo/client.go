@@ -13,7 +13,26 @@ import (
 	"golang.org/x/net/html"
 )
 
-const maxIndexSize = 4 << 20
+const (
+	maxRepositoryResourceSize = 4 << 20
+	userAgent                 = "yaqt/0.1.0"
+)
+
+type repositoryResource struct {
+	description string
+	accept      string
+}
+
+var (
+	repositoryIndexResource = repositoryResource{
+		description: "Qt repository index",
+		accept:      "text/html",
+	}
+	packageMetadataResource = repositoryResource{
+		description: "Qt package metadata",
+		accept:      "application/xml, text/xml",
+	}
+)
 
 // Client reads metadata from Qt online repositories.
 type Client struct {
@@ -30,33 +49,9 @@ func NewClient(httpClient *http.Client) *Client {
 
 // ListVersions returns supported stable Qt releases advertised by a repository index.
 func (c *Client) ListVersions(ctx context.Context, repository Repository) ([]Version, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, repository.IndexURL(), nil)
+	index, err := c.fetchResource(ctx, repository.IndexURL(), repositoryIndexResource)
 	if err != nil {
-		return nil, fmt.Errorf("create repository index request: %w", err)
-	}
-	request.Header.Set("Accept", "text/html")
-	request.Header.Set("User-Agent", "yaqt/0.1.0")
-
-	response, err := c.httpClient.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("fetch Qt repository index %s: %w", repository.IndexURL(), err)
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf(
-			"fetch Qt repository index %s: server returned %s",
-			repository.IndexURL(),
-			response.Status,
-		)
-	}
-
-	index, err := io.ReadAll(io.LimitReader(response.Body, maxIndexSize+1))
-	if err != nil {
-		return nil, fmt.Errorf("read Qt repository index %s: %w", repository.IndexURL(), err)
-	}
-	if len(index) > maxIndexSize {
-		return nil, fmt.Errorf("Qt repository index %s exceeds %d bytes", repository.IndexURL(), maxIndexSize)
+		return nil, err
 	}
 
 	versions, err := parseVersions(bytes.NewReader(index), repository)
@@ -71,6 +66,48 @@ func (c *Client) ListVersions(ctx context.Context, repository Repository) ([]Ver
 		)
 	}
 	return versions, nil
+}
+
+func (c *Client) fetchResource(
+	ctx context.Context,
+	resourceURL string,
+	resource repositoryResource,
+) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create %s request: %w", resource.description, err)
+	}
+	request.Header.Set("Accept", resource.accept)
+	request.Header.Set("User-Agent", userAgent)
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s %s: %w", resource.description, resourceURL, err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf(
+			"fetch %s %s: server returned %s",
+			resource.description,
+			resourceURL,
+			response.Status,
+		)
+	}
+
+	contents, err := io.ReadAll(io.LimitReader(response.Body, maxRepositoryResourceSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s %s: %w", resource.description, resourceURL, err)
+	}
+	if len(contents) > maxRepositoryResourceSize {
+		return nil, fmt.Errorf(
+			"%s %s exceeds %d bytes",
+			resource.description,
+			resourceURL,
+			maxRepositoryResourceSize,
+		)
+	}
+	return contents, nil
 }
 
 func parseVersions(reader io.Reader, repository Repository) ([]Version, error) {
@@ -138,7 +175,7 @@ func includeEntry(repository Repository, entry repositoryEntry) bool {
 	if entry.Extension == "" {
 		return true
 	}
-	if repository.Host != HostAllOS || repository.Target != TargetQt {
+	if repository.Target != TargetQt {
 		return false
 	}
 	switch entry.Extension {

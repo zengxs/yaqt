@@ -24,16 +24,47 @@ $ yaqt list-qt
 6.12.0
 ```
 
-Select another repository explicitly when needed:
+Select another Qt target when needed:
 
 ```console
-$ yaqt list-qt --host all_os --target wasm
+$ yaqt list-qt --target android
 ```
 
 The command prints stable Qt 6.8.0 or newer releases, one version per line in
 ascending order. It reads the Qt server's directory index; architecture and
 package availability are validated later when a specific version is selected
-for installation.
+for installation. Repository layout details are selected automatically from the
+host and target. Android, WebAssembly, and shared Qt content are routed through
+Qt's platform-independent `all_os` repository without changing the user-visible
+host.
+
+Plan an Android installation without downloading or changing any files:
+
+```console
+$ yaqt install-qt 6.8.0 \
+    --target android \
+    --abi arm64-v8a \
+    --output-dir /opt/Qt \
+    --dry-run
+```
+
+The `--abi` flag accepts `arm64-v8a`, `armeabi-v7a`, `x86`, or `x86_64` and may
+be repeated. Additional Qt modules may be selected with a repeatable `--module`
+flag:
+
+```console
+$ yaqt install-qt 6.8.0 \
+    --target android \
+    --abi arm64-v8a \
+    --module qtmultimedia \
+    --dry-run
+```
+
+The dry run reads `Updates.xml`, groups selected archives by their base or module
+package, resolves the exact archive and checksum URLs, honors archive-specific
+extraction paths, and reports the matching desktop Qt requirement. Android
+downloads, extraction, checksum verification, and path relocation are not
+implemented yet.
 
 ## Relationship to Qt
 

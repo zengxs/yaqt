@@ -62,9 +62,55 @@ func TestNewRepositoryBuildsIndexURL(t *testing.T) {
 	}
 }
 
+func TestNewRepositoryRoutesPlatformIndependentTargets(t *testing.T) {
+	tests := []struct {
+		name   string
+		host   Host
+		target Target
+		want   string
+	}{
+		{
+			name:   "Android",
+			host:   HostLinux,
+			target: TargetAndroid,
+			want:   "https://mirror.example/qt/online/qtsdkrepository/all_os/android/",
+		},
+		{
+			name:   "WebAssembly",
+			host:   HostMac,
+			target: TargetWASM,
+			want:   "https://mirror.example/qt/online/qtsdkrepository/all_os/wasm/",
+		},
+		{
+			name:   "shared Qt content",
+			host:   HostWindows,
+			target: TargetQt,
+			want:   "https://mirror.example/qt/online/qtsdkrepository/all_os/qt/",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository, err := NewRepository("https://mirror.example/qt", test.host, test.target)
+			if err != nil {
+				t.Fatalf("NewRepository() error = %v", err)
+			}
+			if got := repository.IndexURL(); got != test.want {
+				t.Fatalf("IndexURL() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestNewRepositoryRejectsInvalidHostTargetPair(t *testing.T) {
-	if _, err := NewRepository(DefaultBaseURL, HostLinuxARM64, TargetAndroid); err == nil {
+	if _, err := NewRepository(DefaultBaseURL, HostLinux, TargetIOS); err == nil {
 		t.Fatal("NewRepository() error = nil, want an invalid host/target error")
+	}
+}
+
+func TestParseHostRejectsRepositorySegment(t *testing.T) {
+	if _, err := ParseHost("all_os"); err == nil {
+		t.Fatal("ParseHost() error = nil, want a repository segment error")
 	}
 }
 

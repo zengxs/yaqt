@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<Updates>
+  <PackageUpdate>
+    <Name>qt.qt6.680.addons.qtmultimedia</Name>
+    <Version>6.8.0-0-202410030750</Version>
+    <DownloadableArchives />
+  </PackageUpdate>
+  <PackageUpdate>
+    <Name>qt.qt6.680.addons.qtmultimedia.android_arm64_v8a</Name>
+    <Version>6.8.0-0-202410030750</Version>
+    <DownloadableArchives>qtmultimedia-MacOS-Android-ARM64.7z</DownloadableArchives>
+  </PackageUpdate>
+  <PackageUpdate>
+    <Name>qt.qt6.680.android_arm64_v8a</Name>
+    <Version>6.8.0-0-202410030750</Version>
+    <DownloadableArchives>qtbase-MacOS-Android-ARM64.7z, qtsvg-MacOS-Android-ARM64.7z, qtdeclarative-MacOS-Android-ARM64.7z</DownloadableArchives>
+  </PackageUpdate>
+</Updates>

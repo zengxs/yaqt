@@ -30,7 +30,7 @@ func TestParseVersionsFiltersDeduplicatesAndSorts(t *testing.T) {
 }
 
 func TestParseVersionsAcceptsCurrentAllOSQtExtensions(t *testing.T) {
-	repository, err := NewRepository(DefaultBaseURL, HostAllOS, TargetQt)
+	repository, err := NewRepository(DefaultBaseURL, HostLinux, TargetQt)
 	if err != nil {
 		t.Fatalf("NewRepository() error = %v", err)
 	}
