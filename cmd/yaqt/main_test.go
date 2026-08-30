@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -19,11 +20,32 @@ type stubRepositoryClient struct {
 type stubArchiveFetcher struct {
 	destination string
 	archives    []qtrepo.Archive
+	failOn      string
+}
+
+type archiveExtraction struct {
+	archivePath string
+	destination string
+}
+
+type stubArchiveExtractor struct {
+	extractions []archiveExtraction
 }
 
 func (stub *stubArchiveFetcher) Fetch(_ context.Context, archive qtrepo.Archive) (string, error) {
 	stub.archives = append(stub.archives, archive)
+	if archive.Name == stub.failOn {
+		return "", errors.New("download failed")
+	}
 	return filepath.Join(stub.destination, archive.Name+".7z"), nil
+}
+
+func (stub *stubArchiveExtractor) Extract(_ context.Context, archivePath, destination string) error {
+	stub.extractions = append(stub.extractions, archiveExtraction{
+		archivePath: archivePath,
+		destination: destination,
+	})
+	return nil
 }
 
 func (stub *stubRepositoryClient) ListVersions(_ context.Context, repository qtrepo.Repository) ([]qtrepo.Version, error) {
@@ -47,7 +69,7 @@ func TestListQtCommand(t *testing.T) {
 			{Major: 6, Minor: 8, Patch: 1},
 		},
 	}
-	command := newCommand(lister, lister, nil, qtrepo.HostLinux, output, &bytes.Buffer{})
+	command := newCommand(lister, lister, nil, nil, qtrepo.HostLinux, output, &bytes.Buffer{})
 
 	err := command.Run(context.Background(), []string{
 		"yaqt",
@@ -69,7 +91,7 @@ func TestListQtCommand(t *testing.T) {
 
 func TestListQtCommandRejectsInvalidHostTargetPair(t *testing.T) {
 	client := &stubRepositoryClient{}
-	command := newCommand(client, client, nil, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
+	command := newCommand(client, client, nil, nil, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
 	err := command.Run(context.Background(), []string{
 		"yaqt",
 		"list-qt",
@@ -130,7 +152,7 @@ func TestInstallQtDryRun(t *testing.T) {
 			},
 		},
 	}
-	command := newCommand(client, client, nil, qtrepo.HostLinux, output, &bytes.Buffer{})
+	command := newCommand(client, client, nil, nil, qtrepo.HostLinux, output, &bytes.Buffer{})
 
 	err := command.Run(context.Background(), []string{
 		"yaqt",
@@ -210,7 +232,7 @@ func TestInstallQtDownloadOnlyUsesExplicitCacheDirectory(t *testing.T) {
 		factoryCacheDir = resolvedCacheDir
 		return fetcher, nil
 	})
-	command := newCommand(client, client, factory, qtrepo.HostLinux, output, &bytes.Buffer{})
+	command := newCommand(client, client, factory, nil, qtrepo.HostLinux, output, &bytes.Buffer{})
 
 	err := command.Run(context.Background(), []string{
 		"yaqt",
@@ -240,9 +262,109 @@ func TestInstallQtDownloadOnlyUsesExplicitCacheDirectory(t *testing.T) {
 	}
 }
 
+func TestInstallQtExtractOnlyDownloadsAndExtractsArchives(t *testing.T) {
+	output := &bytes.Buffer{}
+	extractTo := filepath.Join(".tmp", "Qt", "6.8.0", "android_arm64_v8a")
+	archive := qtrepo.Archive{
+		Name:      "qtbase",
+		URL:       "https://mirror.example/qtbase.7z",
+		ExtractTo: extractTo,
+		Checksum: qtrepo.Checksum{
+			Algorithm: qtrepo.ChecksumSHA256,
+			URL:       "https://mirror.example/qtbase.7z.sha256",
+		},
+	}
+	client := &stubRepositoryClient{
+		installPlan: qtrepo.InstallPlan{
+			Version: qtrepo.Version{Major: 6, Minor: 8},
+			Target:  qtrepo.TargetAndroid,
+			AndroidKits: []qtrepo.AndroidKit{
+				{Packages: []qtrepo.PackageSelection{{Name: "qt.qt6.680.android_arm64_v8a", Archives: []qtrepo.Archive{archive}}}},
+			},
+		},
+	}
+	cacheDir := filepath.Join(".tmp", "manual-cache")
+	fetcher := &stubArchiveFetcher{destination: filepath.Join(cacheDir, "downloads", "sha256")}
+	factory := archiveFetcherFactory(func(string) (archiveFetcher, error) {
+		return fetcher, nil
+	})
+	extractor := &stubArchiveExtractor{}
+	command := newCommand(client, client, factory, extractor, qtrepo.HostLinux, output, &bytes.Buffer{})
+
+	err := command.Run(context.Background(), []string{
+		"yaqt",
+		"install-qt",
+		"6.8.0",
+		"--target", "android",
+		"--abi", "arm64-v8a",
+		"--extract-only",
+		"--cache-dir", cacheDir,
+	})
+	if err != nil {
+		t.Fatalf("command.Run() error = %v", err)
+	}
+	wantArchivePath := filepath.Join(fetcher.destination, "qtbase.7z")
+	wantExtractions := []archiveExtraction{{archivePath: wantArchivePath, destination: extractTo}}
+	if got := extractor.extractions; len(got) != len(wantExtractions) || got[0] != wantExtractions[0] {
+		t.Errorf("extractions = %v, want %v", got, wantExtractions)
+	}
+	for _, want := range []string{
+		"Cached qtbase: " + wantArchivePath,
+		"Extracted qtbase to " + extractTo,
+		"Path relocation has not been applied.",
+	} {
+		if !bytes.Contains(output.Bytes(), []byte(want)) {
+			t.Errorf("output does not contain %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestInstallQtExtractOnlyDownloadsEveryArchiveBeforeExtraction(t *testing.T) {
+	archives := []qtrepo.Archive{
+		{Name: "qtbase", ExtractTo: filepath.Join(".tmp", "Qt")},
+		{Name: "qtsvg", ExtractTo: filepath.Join(".tmp", "Qt")},
+	}
+	client := &stubRepositoryClient{
+		installPlan: qtrepo.InstallPlan{
+			AndroidKits: []qtrepo.AndroidKit{
+				{Packages: []qtrepo.PackageSelection{{Archives: archives}}},
+			},
+		},
+	}
+	fetcher := &stubArchiveFetcher{destination: filepath.Join(".tmp", "cache"), failOn: "qtsvg"}
+	factory := archiveFetcherFactory(func(string) (archiveFetcher, error) {
+		return fetcher, nil
+	})
+	extractor := &stubArchiveExtractor{}
+	command := newCommand(
+		client,
+		client,
+		factory,
+		extractor,
+		qtrepo.HostLinux,
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	)
+
+	err := command.Run(context.Background(), []string{
+		"yaqt",
+		"install-qt",
+		"6.8.0",
+		"--target", "android",
+		"--abi", "arm64-v8a",
+		"--extract-only",
+	})
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("download failed")) {
+		t.Fatalf("command.Run() error = %v, want a download error", err)
+	}
+	if len(extractor.extractions) != 0 {
+		t.Errorf("extractions = %v, want none before every archive is cached", extractor.extractions)
+	}
+}
+
 func TestInstallQtRequiresExecutionMode(t *testing.T) {
 	client := &stubRepositoryClient{}
-	command := newCommand(client, client, nil, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
+	command := newCommand(client, client, nil, nil, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
 	err := command.Run(context.Background(), []string{
 		"yaqt",
 		"install-qt",
@@ -250,24 +372,32 @@ func TestInstallQtRequiresExecutionMode(t *testing.T) {
 		"--target", "android",
 		"--abi", "arm64-v8a",
 	})
-	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("--dry-run or --download-only")) {
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("--dry-run, --download-only, or --extract-only")) {
 		t.Fatalf("command.Run() error = %v, want an execution mode requirement", err)
 	}
 }
 
 func TestInstallQtRejectsConflictingExecutionModes(t *testing.T) {
-	client := &stubRepositoryClient{}
-	command := newCommand(client, client, nil, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
-	err := command.Run(context.Background(), []string{
-		"yaqt",
-		"install-qt",
-		"6.8.0",
-		"--target", "android",
-		"--abi", "arm64-v8a",
-		"--dry-run",
-		"--download-only",
-	})
-	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("mutually exclusive")) {
-		t.Fatalf("command.Run() error = %v, want a mutually exclusive mode error", err)
+	for _, modes := range [][]string{
+		{"--dry-run", "--download-only"},
+		{"--dry-run", "--extract-only"},
+		{"--download-only", "--extract-only"},
+	} {
+		t.Run(modes[0]+"_and_"+modes[1], func(t *testing.T) {
+			client := &stubRepositoryClient{}
+			command := newCommand(client, client, nil, nil, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
+			arguments := []string{
+				"yaqt",
+				"install-qt",
+				"6.8.0",
+				"--target", "android",
+				"--abi", "arm64-v8a",
+			}
+			arguments = append(arguments, modes...)
+			err := command.Run(context.Background(), arguments)
+			if err == nil || !bytes.Contains([]byte(err.Error()), []byte("mutually exclusive")) {
+				t.Fatalf("command.Run() error = %v, want a mutually exclusive mode error", err)
+			}
+		})
 	}
 }

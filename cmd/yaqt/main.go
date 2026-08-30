@@ -26,7 +26,15 @@ func main() {
 	fetcherFactory := archiveFetcherFactory(func(cacheDir string) (archiveFetcher, error) {
 		return qtinstall.NewArchiveStore(nil, cacheDir)
 	})
-	command := newCommand(client, client, fetcherFactory, defaultHost, os.Stdout, os.Stderr)
+	command := newCommand(
+		client,
+		client,
+		fetcherFactory,
+		qtinstall.SevenZipExtractor{},
+		defaultHost,
+		os.Stdout,
+		os.Stderr,
+	)
 	if err := command.Run(context.Background(), os.Args); err != nil {
 		fmt.Fprintf(os.Stderr, "yaqt: %v\n", err)
 		os.Exit(1)
@@ -47,10 +55,23 @@ type archiveFetcher interface {
 
 type archiveFetcherFactory func(string) (archiveFetcher, error)
 
+type archiveExtractor interface {
+	Extract(context.Context, string, string) error
+}
+
+type installExecutionMode uint8
+
+const (
+	installExecutionModeDryRun installExecutionMode = iota + 1
+	installExecutionModeDownloadOnly
+	installExecutionModeExtractOnly
+)
+
 func newCommand(
 	lister versionLister,
 	resolver installResolver,
 	fetcherFactory archiveFetcherFactory,
+	extractor archiveExtractor,
 	defaultHost qtrepo.Host,
 	output,
 	errorOutput io.Writer,
@@ -64,7 +85,7 @@ func newCommand(
 		Suggest:   true,
 		Commands: []*cli.Command{
 			newListQtCommand(lister, defaultHost, output),
-			newInstallQtCommand(resolver, fetcherFactory, defaultHost, output),
+			newInstallQtCommand(resolver, fetcherFactory, extractor, defaultHost, output),
 		},
 	}
 }
@@ -117,15 +138,17 @@ func newListQtCommand(lister versionLister, defaultHost qtrepo.Host, output io.W
 func newInstallQtCommand(
 	resolver installResolver,
 	fetcherFactory archiveFetcherFactory,
+	extractor archiveExtractor,
 	defaultHost qtrepo.Host,
 	output io.Writer,
 ) *cli.Command {
 	return &cli.Command{
 		Name:      "install-qt",
-		Usage:     "Plan or download a Qt SDK installation",
+		Usage:     "Plan, download, or extract a Qt SDK installation",
 		ArgsUsage: "VERSION",
 		Description: "Resolve the Qt archives, extraction paths, and host Qt requirement for an Android installation. " +
-			"The command can print the plan or download and verify its archives; extraction is not yet available.",
+			"The command can print the plan, download and verify its archives, or extract them. " +
+			"Android path relocation is not yet available.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "host",
@@ -169,18 +192,18 @@ func newInstallQtCommand(
 				Name:  "download-only",
 				Usage: "Download and verify archives without extracting them",
 			},
+			&cli.BoolFlag{
+				Name:  "extract-only",
+				Usage: "Download, verify, and extract archives without applying path relocation",
+			},
 		},
 		Action: func(ctx context.Context, command *cli.Command) error {
 			if command.NArg() != 1 {
 				return fmt.Errorf("install-qt requires exactly one Qt version")
 			}
-			dryRun := command.Bool("dry-run")
-			downloadOnly := command.Bool("download-only")
-			if dryRun && downloadOnly {
-				return fmt.Errorf("--dry-run and --download-only are mutually exclusive")
-			}
-			if !dryRun && !downloadOnly {
-				return fmt.Errorf("installation is not implemented yet; use --dry-run or --download-only")
+			mode, err := requestedInstallExecutionMode(command)
+			if err != nil {
+				return err
 			}
 
 			version, err := qtrepo.ParseVersion(command.Args().First())
@@ -214,7 +237,7 @@ func newInstallQtCommand(
 			if err != nil {
 				return err
 			}
-			if dryRun {
+			if mode == installExecutionModeDryRun {
 				return printInstallPlan(output, plan)
 			}
 
@@ -229,9 +252,40 @@ func newInstallQtCommand(
 			if err != nil {
 				return fmt.Errorf("configure archive cache: %w", err)
 			}
-			return downloadInstallPlan(ctx, output, plan, cacheDir, fetcher)
+			if mode == installExecutionModeExtractOnly && extractor == nil {
+				return fmt.Errorf("archive extractor is not configured")
+			}
+			return materializeInstallPlan(ctx, output, plan, cacheDir, fetcher, extractor, mode)
 		},
 	}
+}
+
+func requestedInstallExecutionMode(command *cli.Command) (installExecutionMode, error) {
+	candidates := []struct {
+		enabled bool
+		mode    installExecutionMode
+	}{
+		{enabled: command.Bool("dry-run"), mode: installExecutionModeDryRun},
+		{enabled: command.Bool("download-only"), mode: installExecutionModeDownloadOnly},
+		{enabled: command.Bool("extract-only"), mode: installExecutionModeExtractOnly},
+	}
+
+	var selected installExecutionMode
+	for _, candidate := range candidates {
+		if !candidate.enabled {
+			continue
+		}
+		if selected != 0 {
+			return 0, fmt.Errorf("--dry-run, --download-only, and --extract-only are mutually exclusive")
+		}
+		selected = candidate.mode
+	}
+	if selected == 0 {
+		return 0, fmt.Errorf(
+			"installation is not implemented yet; use --dry-run, --download-only, or --extract-only",
+		)
+	}
+	return selected, nil
 }
 
 func repositoryFromCommand(command *cli.Command) (qtrepo.Repository, error) {
@@ -294,16 +348,23 @@ func printInstallPlan(output io.Writer, plan qtrepo.InstallPlan) error {
 	return nil
 }
 
-func downloadInstallPlan(
+func materializeInstallPlan(
 	ctx context.Context,
 	output io.Writer,
 	plan qtrepo.InstallPlan,
 	cacheDir string,
 	fetcher archiveFetcher,
+	extractor archiveExtractor,
+	mode installExecutionMode,
 ) error {
 	if _, err := fmt.Fprintf(output, "Cache: %s\n", cacheDir); err != nil {
 		return fmt.Errorf("write archive cache path: %w", err)
 	}
+	type cachedArchive struct {
+		archive qtrepo.Archive
+		path    string
+	}
+	cached := make([]cachedArchive, 0)
 	for _, kit := range plan.AndroidKits {
 		for _, packageSelection := range kit.Packages {
 			for _, archive := range packageSelection.Archives {
@@ -314,8 +375,28 @@ func downloadInstallPlan(
 				if _, err := fmt.Fprintf(output, "Cached %s: %s\n", archive.Name, path); err != nil {
 					return fmt.Errorf("write cached archive path: %w", err)
 				}
+				cached = append(cached, cachedArchive{archive: archive, path: path})
 			}
 		}
+	}
+	if mode != installExecutionModeExtractOnly {
+		return nil
+	}
+	for _, item := range cached {
+		if err := extractor.Extract(ctx, item.path, item.archive.ExtractTo); err != nil {
+			return fmt.Errorf("extract archive %s: %w", item.archive.Name, err)
+		}
+		if _, err := fmt.Fprintf(
+			output,
+			"Extracted %s to %s\n",
+			item.archive.Name,
+			item.archive.ExtractTo,
+		); err != nil {
+			return fmt.Errorf("write extracted archive path: %w", err)
+		}
+	}
+	if _, err := fmt.Fprintln(output, "Path relocation has not been applied."); err != nil {
+		return fmt.Errorf("write extraction status: %w", err)
 	}
 	return nil
 }

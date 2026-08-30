@@ -62,9 +62,36 @@ $ yaqt install-qt 6.8.0 \
 
 The dry run reads `Updates.xml`, groups selected archives by their base or module
 package, resolves the exact archive and checksum URLs, honors archive-specific
-extraction paths, and reports the matching desktop Qt requirement. Android
-downloads, extraction, checksum verification, and path relocation are not
-implemented yet.
+extraction paths, and reports the matching desktop Qt requirement.
+
+Download and verify the selected archives without extracting them:
+
+```console
+$ yaqt install-qt 6.8.0 \
+    --target android \
+    --abi arm64-v8a \
+    --download-only
+```
+
+Verified archives are stored in a content-addressed cache. Use `--cache-dir` to
+select its root, or set `YAQT_CACHE_DIR`. Otherwise, yaqt uses the operating
+system's user cache directory.
+
+An explicit extraction-only mode is available while the Android installation
+workflow is under development:
+
+```console
+$ yaqt install-qt 6.8.0 \
+    --target android \
+    --abi arm64-v8a \
+    --output-dir /opt/Qt \
+    --extract-only
+```
+
+The extractor accepts regular files and directories, rejects unsafe archive
+paths and special files, and preserves safe permission and executable bits.
+This mode stops before Android path relocation, so its output is not yet a
+complete Qt installation.
 
 ## Relationship to Qt
 
