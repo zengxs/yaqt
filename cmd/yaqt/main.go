@@ -10,6 +10,8 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/zengxs/yaqt/internal/buildinfo"
+	"github.com/zengxs/yaqt/internal/qtinstall"
 	"github.com/zengxs/yaqt/internal/qtrepo"
 )
 
@@ -21,7 +23,10 @@ func main() {
 	}
 
 	client := qtrepo.NewClient(&http.Client{Timeout: 30 * time.Second})
-	command := newCommand(client, client, defaultHost, os.Stdout, os.Stderr)
+	fetcherFactory := archiveFetcherFactory(func(cacheDir string) (archiveFetcher, error) {
+		return qtinstall.NewArchiveStore(nil, cacheDir)
+	})
+	command := newCommand(client, client, fetcherFactory, defaultHost, os.Stdout, os.Stderr)
 	if err := command.Run(context.Background(), os.Args); err != nil {
 		fmt.Fprintf(os.Stderr, "yaqt: %v\n", err)
 		os.Exit(1)
@@ -36,9 +41,16 @@ type installResolver interface {
 	ResolveInstall(context.Context, qtrepo.InstallRequest) (qtrepo.InstallPlan, error)
 }
 
+type archiveFetcher interface {
+	Fetch(context.Context, qtrepo.Archive) (string, error)
+}
+
+type archiveFetcherFactory func(string) (archiveFetcher, error)
+
 func newCommand(
 	lister versionLister,
 	resolver installResolver,
+	fetcherFactory archiveFetcherFactory,
 	defaultHost qtrepo.Host,
 	output,
 	errorOutput io.Writer,
@@ -46,13 +58,13 @@ func newCommand(
 	return &cli.Command{
 		Name:      "yaqt",
 		Usage:     "Install Qt SDK components non-interactively",
-		Version:   "0.1.0",
+		Version:   buildinfo.Version,
 		Writer:    output,
 		ErrWriter: errorOutput,
 		Suggest:   true,
 		Commands: []*cli.Command{
 			newListQtCommand(lister, defaultHost, output),
-			newInstallQtCommand(resolver, defaultHost, output),
+			newInstallQtCommand(resolver, fetcherFactory, defaultHost, output),
 		},
 	}
 }
@@ -102,13 +114,18 @@ func newListQtCommand(lister versionLister, defaultHost qtrepo.Host, output io.W
 	}
 }
 
-func newInstallQtCommand(resolver installResolver, defaultHost qtrepo.Host, output io.Writer) *cli.Command {
+func newInstallQtCommand(
+	resolver installResolver,
+	fetcherFactory archiveFetcherFactory,
+	defaultHost qtrepo.Host,
+	output io.Writer,
+) *cli.Command {
 	return &cli.Command{
 		Name:      "install-qt",
-		Usage:     "Plan a Qt SDK installation",
+		Usage:     "Plan or download a Qt SDK installation",
 		ArgsUsage: "VERSION",
 		Description: "Resolve the Qt archives, extraction paths, and host Qt requirement for an Android installation. " +
-			"Only dry-run planning is currently available.",
+			"The command can print the plan or download and verify its archives; extraction is not yet available.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "host",
@@ -140,17 +157,30 @@ func newInstallQtCommand(resolver installResolver, defaultHost qtrepo.Host, outp
 				Value: qtrepo.DefaultBaseURL,
 				Usage: "Qt download server or mirror `URL`",
 			},
+			&cli.StringFlag{
+				Name:  "cache-dir",
+				Usage: "Archive cache root `DIR`; defaults to YAQT_CACHE_DIR or the operating system cache",
+			},
 			&cli.BoolFlag{
 				Name:  "dry-run",
 				Usage: "Print the installation plan without changing the filesystem",
+			},
+			&cli.BoolFlag{
+				Name:  "download-only",
+				Usage: "Download and verify archives without extracting them",
 			},
 		},
 		Action: func(ctx context.Context, command *cli.Command) error {
 			if command.NArg() != 1 {
 				return fmt.Errorf("install-qt requires exactly one Qt version")
 			}
-			if !command.Bool("dry-run") {
-				return fmt.Errorf("installation is not implemented yet; use --dry-run to inspect the plan")
+			dryRun := command.Bool("dry-run")
+			downloadOnly := command.Bool("download-only")
+			if dryRun && downloadOnly {
+				return fmt.Errorf("--dry-run and --download-only are mutually exclusive")
+			}
+			if !dryRun && !downloadOnly {
+				return fmt.Errorf("installation is not implemented yet; use --dry-run or --download-only")
 			}
 
 			version, err := qtrepo.ParseVersion(command.Args().First())
@@ -184,7 +214,22 @@ func newInstallQtCommand(resolver installResolver, defaultHost qtrepo.Host, outp
 			if err != nil {
 				return err
 			}
-			return printInstallPlan(output, plan)
+			if dryRun {
+				return printInstallPlan(output, plan)
+			}
+
+			cacheDir, err := qtinstall.ResolveCacheDir(command.String("cache-dir"))
+			if err != nil {
+				return err
+			}
+			if fetcherFactory == nil {
+				return fmt.Errorf("archive downloader is not configured")
+			}
+			fetcher, err := fetcherFactory(cacheDir)
+			if err != nil {
+				return fmt.Errorf("configure archive cache: %w", err)
+			}
+			return downloadInstallPlan(ctx, output, plan, cacheDir, fetcher)
 		},
 	}
 }
@@ -231,10 +276,11 @@ func printInstallPlan(output io.Writer, plan qtrepo.InstallPlan) error {
 			}
 			for _, archive := range packageSelection.Archives {
 				if err := write(
-					"    %s\n      download: %s\n      checksum: %s\n      extract to: %s\n",
+					"    %s\n      download: %s\n      checksum (%s): %s\n      extract to: %s\n",
 					archive.Name,
 					archive.URL,
-					archive.ChecksumURL,
+					archive.Checksum.Algorithm,
+					archive.Checksum.URL,
 					archive.ExtractTo,
 				); err != nil {
 					return fmt.Errorf("write install plan: %w", err)
@@ -244,6 +290,32 @@ func printInstallPlan(output io.Writer, plan qtrepo.InstallPlan) error {
 	}
 	if err := write("\nPost-install: relocate Android Qt paths and connect the kit to the matching host Qt.\n"); err != nil {
 		return fmt.Errorf("write install plan: %w", err)
+	}
+	return nil
+}
+
+func downloadInstallPlan(
+	ctx context.Context,
+	output io.Writer,
+	plan qtrepo.InstallPlan,
+	cacheDir string,
+	fetcher archiveFetcher,
+) error {
+	if _, err := fmt.Fprintf(output, "Cache: %s\n", cacheDir); err != nil {
+		return fmt.Errorf("write archive cache path: %w", err)
+	}
+	for _, kit := range plan.AndroidKits {
+		for _, packageSelection := range kit.Packages {
+			for _, archive := range packageSelection.Archives {
+				path, err := fetcher.Fetch(ctx, archive)
+				if err != nil {
+					return fmt.Errorf("cache archive %s: %w", archive.Name, err)
+				}
+				if _, err := fmt.Fprintf(output, "Cached %s: %s\n", archive.Name, path); err != nil {
+					return fmt.Errorf("write cached archive path: %w", err)
+				}
+			}
+		}
 	}
 	return nil
 }

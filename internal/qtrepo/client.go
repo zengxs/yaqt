@@ -11,12 +11,11 @@ import (
 	"strings"
 
 	"golang.org/x/net/html"
+
+	"github.com/zengxs/yaqt/internal/httpclient"
 )
 
-const (
-	maxRepositoryResourceSize = 4 << 20
-	userAgent                 = "yaqt/0.1.0"
-)
+const maxRepositoryResourceSize = 4 << 20
 
 type repositoryResource struct {
 	description string
@@ -73,27 +72,15 @@ func (c *Client) fetchResource(
 	resourceURL string,
 	resource repositoryResource,
 ) ([]byte, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceURL, nil)
+	response, err := httpclient.Get(ctx, c.httpClient, httpclient.Resource{
+		URL:         resourceURL,
+		Accept:      resource.accept,
+		Description: resource.description,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("create %s request: %w", resource.description, err)
-	}
-	request.Header.Set("Accept", resource.accept)
-	request.Header.Set("User-Agent", userAgent)
-
-	response, err := c.httpClient.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("fetch %s %s: %w", resource.description, resourceURL, err)
+		return nil, err
 	}
 	defer response.Body.Close()
-
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf(
-			"fetch %s %s: server returned %s",
-			resource.description,
-			resourceURL,
-			response.Status,
-		)
-	}
 
 	contents, err := io.ReadAll(io.LimitReader(response.Body, maxRepositoryResourceSize+1))
 	if err != nil {

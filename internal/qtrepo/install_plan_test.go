@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zengxs/yaqt/internal/buildinfo"
 )
 
 func TestClientResolveAndroidInstallPlanForQt680(t *testing.T) {
@@ -80,7 +82,10 @@ func TestClientResolveAndroidInstallPlanForQt680(t *testing.T) {
 	if got := first.URL; got != wantURL {
 		t.Errorf("archive URL = %q, want %q", got, wantURL)
 	}
-	if got, want := first.ChecksumURL, wantURL+".sha1"; got != want {
+	if got, want := first.Checksum.Algorithm, ChecksumSHA256; got != want {
+		t.Errorf("checksum algorithm = %q, want %q", got, want)
+	}
+	if got, want := first.Checksum.URL, wantURL+".sha256"; got != want {
 		t.Errorf("checksum URL = %q, want %q", got, want)
 	}
 	if got, want := first.ExtractTo, filepath.Clean("/opt/Qt"); got != want {
@@ -216,7 +221,7 @@ func newMetadataServer(t *testing.T, wantPath, fixture string) *httptest.Server 
 		if got, want := request.Header.Get("Accept"), "application/xml, text/xml"; got != want {
 			t.Errorf("Accept = %q, want %q", got, want)
 		}
-		if got, want := request.Header.Get("User-Agent"), userAgent; got != want {
+		if got, want := request.Header.Get("User-Agent"), buildinfo.UserAgent; got != want {
 			t.Errorf("User-Agent = %q, want %q", got, want)
 		}
 		metadata, err := os.ReadFile(fixture)

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/zengxs/yaqt/internal/qtrepo"
@@ -13,6 +14,16 @@ type stubRepositoryClient struct {
 	versions       []qtrepo.Version
 	installRequest qtrepo.InstallRequest
 	installPlan    qtrepo.InstallPlan
+}
+
+type stubArchiveFetcher struct {
+	destination string
+	archives    []qtrepo.Archive
+}
+
+func (stub *stubArchiveFetcher) Fetch(_ context.Context, archive qtrepo.Archive) (string, error) {
+	stub.archives = append(stub.archives, archive)
+	return filepath.Join(stub.destination, archive.Name+".7z"), nil
 }
 
 func (stub *stubRepositoryClient) ListVersions(_ context.Context, repository qtrepo.Repository) ([]qtrepo.Version, error) {
@@ -36,7 +47,7 @@ func TestListQtCommand(t *testing.T) {
 			{Major: 6, Minor: 8, Patch: 1},
 		},
 	}
-	command := newCommand(lister, lister, qtrepo.HostLinux, output, &bytes.Buffer{})
+	command := newCommand(lister, lister, nil, qtrepo.HostLinux, output, &bytes.Buffer{})
 
 	err := command.Run(context.Background(), []string{
 		"yaqt",
@@ -58,7 +69,7 @@ func TestListQtCommand(t *testing.T) {
 
 func TestListQtCommandRejectsInvalidHostTargetPair(t *testing.T) {
 	client := &stubRepositoryClient{}
-	command := newCommand(client, client, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
+	command := newCommand(client, client, nil, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
 	err := command.Run(context.Background(), []string{
 		"yaqt",
 		"list-qt",
@@ -89,10 +100,13 @@ func TestInstallQtDryRun(t *testing.T) {
 							Name: "qt.qt6.680.android_arm64_v8a",
 							Archives: []qtrepo.Archive{
 								{
-									Name:        "qtbase",
-									URL:         "https://mirror.example/qtbase.7z",
-									ChecksumURL: "https://mirror.example/qtbase.7z.sha1",
-									ExtractTo:   "/opt/Qt",
+									Name: "qtbase",
+									URL:  "https://mirror.example/qtbase.7z",
+									Checksum: qtrepo.Checksum{
+										Algorithm: qtrepo.ChecksumSHA256,
+										URL:       "https://mirror.example/qtbase.7z.sha256",
+									},
+									ExtractTo: "/opt/Qt",
 								},
 							},
 						},
@@ -101,10 +115,13 @@ func TestInstallQtDryRun(t *testing.T) {
 							Module: "qtmultimedia",
 							Archives: []qtrepo.Archive{
 								{
-									Name:        "qtmultimedia",
-									URL:         "https://mirror.example/qtmultimedia.7z",
-									ChecksumURL: "https://mirror.example/qtmultimedia.7z.sha1",
-									ExtractTo:   "/opt/Qt",
+									Name: "qtmultimedia",
+									URL:  "https://mirror.example/qtmultimedia.7z",
+									Checksum: qtrepo.Checksum{
+										Algorithm: qtrepo.ChecksumSHA256,
+										URL:       "https://mirror.example/qtmultimedia.7z.sha256",
+									},
+									ExtractTo: "/opt/Qt",
 								},
 							},
 						},
@@ -113,7 +130,7 @@ func TestInstallQtDryRun(t *testing.T) {
 			},
 		},
 	}
-	command := newCommand(client, client, qtrepo.HostLinux, output, &bytes.Buffer{})
+	command := newCommand(client, client, nil, qtrepo.HostLinux, output, &bytes.Buffer{})
 
 	err := command.Run(context.Background(), []string{
 		"yaqt",
@@ -153,7 +170,7 @@ func TestInstallQtDryRun(t *testing.T) {
 		"arm64-v8a -> /opt/Qt/6.8.0/android_arm64_v8a",
 		"base package: qt.qt6.680.android_arm64_v8a",
 		"qtbase",
-		"https://mirror.example/qtbase.7z.sha1",
+		"https://mirror.example/qtbase.7z.sha256",
 		"module qtmultimedia: qt.qt6.680.addons.qtmultimedia.android_arm64_v8a",
 		"Post-install: relocate Android Qt paths and connect the kit to the matching host Qt.",
 	} {
@@ -163,9 +180,69 @@ func TestInstallQtDryRun(t *testing.T) {
 	}
 }
 
-func TestInstallQtRequiresDryRun(t *testing.T) {
+func TestInstallQtDownloadOnlyUsesExplicitCacheDirectory(t *testing.T) {
+	output := &bytes.Buffer{}
+	archive := qtrepo.Archive{
+		Name: "qtbase",
+		URL:  "https://mirror.example/qtbase.7z",
+		Checksum: qtrepo.Checksum{
+			Algorithm: qtrepo.ChecksumSHA256,
+			URL:       "https://mirror.example/qtbase.7z.sha256",
+		},
+	}
+	client := &stubRepositoryClient{
+		installPlan: qtrepo.InstallPlan{
+			Version: qtrepo.Version{Major: 6, Minor: 8},
+			Target:  qtrepo.TargetAndroid,
+			AndroidKits: []qtrepo.AndroidKit{
+				{
+					Packages: []qtrepo.PackageSelection{
+						{Name: "qt.qt6.680.android_arm64_v8a", Archives: []qtrepo.Archive{archive}},
+					},
+				},
+			},
+		},
+	}
+	cacheDir := filepath.Join(".tmp", "manual-cache")
+	fetcher := &stubArchiveFetcher{destination: filepath.Join(cacheDir, "downloads", "sha256")}
+	var factoryCacheDir string
+	factory := archiveFetcherFactory(func(resolvedCacheDir string) (archiveFetcher, error) {
+		factoryCacheDir = resolvedCacheDir
+		return fetcher, nil
+	})
+	command := newCommand(client, client, factory, qtrepo.HostLinux, output, &bytes.Buffer{})
+
+	err := command.Run(context.Background(), []string{
+		"yaqt",
+		"install-qt",
+		"6.8.0",
+		"--target", "android",
+		"--abi", "arm64-v8a",
+		"--download-only",
+		"--cache-dir", cacheDir,
+	})
+	if err != nil {
+		t.Fatalf("command.Run() error = %v", err)
+	}
+	if got, want := factoryCacheDir, filepath.Clean(cacheDir); got != want {
+		t.Errorf("archive fetcher cache directory = %q, want %q", got, want)
+	}
+	if got, want := fetcher.archives, []qtrepo.Archive{archive}; len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("fetched archives = %v, want %v", got, want)
+	}
+	for _, want := range []string{
+		"Cache: " + filepath.Clean(cacheDir),
+		"Cached qtbase: " + filepath.Join(fetcher.destination, "qtbase.7z"),
+	} {
+		if !bytes.Contains(output.Bytes(), []byte(want)) {
+			t.Errorf("output does not contain %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestInstallQtRequiresExecutionMode(t *testing.T) {
 	client := &stubRepositoryClient{}
-	command := newCommand(client, client, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
+	command := newCommand(client, client, nil, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
 	err := command.Run(context.Background(), []string{
 		"yaqt",
 		"install-qt",
@@ -173,7 +250,24 @@ func TestInstallQtRequiresDryRun(t *testing.T) {
 		"--target", "android",
 		"--abi", "arm64-v8a",
 	})
-	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("--dry-run")) {
-		t.Fatalf("command.Run() error = %v, want a dry-run requirement", err)
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("--dry-run or --download-only")) {
+		t.Fatalf("command.Run() error = %v, want an execution mode requirement", err)
+	}
+}
+
+func TestInstallQtRejectsConflictingExecutionModes(t *testing.T) {
+	client := &stubRepositoryClient{}
+	command := newCommand(client, client, nil, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
+	err := command.Run(context.Background(), []string{
+		"yaqt",
+		"install-qt",
+		"6.8.0",
+		"--target", "android",
+		"--abi", "arm64-v8a",
+		"--dry-run",
+		"--download-only",
+	})
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("mutually exclusive")) {
+		t.Fatalf("command.Run() error = %v, want a mutually exclusive mode error", err)
 	}
 }

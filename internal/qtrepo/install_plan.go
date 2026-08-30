@@ -48,12 +48,26 @@ type PackageSelection struct {
 	Archives []Archive
 }
 
+// ChecksumAlgorithm identifies a supported archive checksum algorithm.
+type ChecksumAlgorithm string
+
+const (
+	// ChecksumSHA256 selects SHA-256 sidecars and verification.
+	ChecksumSHA256 ChecksumAlgorithm = "sha256"
+)
+
+// Checksum describes how to verify one downloadable archive.
+type Checksum struct {
+	Algorithm ChecksumAlgorithm
+	URL       string
+}
+
 // Archive describes one downloadable Qt archive and where to extract it.
 type Archive struct {
-	Name        string
-	URL         string
-	ChecksumURL string
-	ExtractTo   string
+	Name      string
+	URL       string
+	Checksum  Checksum
+	ExtractTo string
 }
 
 type updatesDocument struct {
@@ -253,10 +267,13 @@ func resolvePackageArchives(
 		logicalName, _, _ := strings.Cut(archiveName, "-")
 		logicalName = strings.TrimSuffix(logicalName, ".7z")
 		archives = append(archives, Archive{
-			Name:        logicalName,
-			URL:         archiveURL,
-			ChecksumURL: archiveURL + ".sha1",
-			ExtractTo:   extractTo,
+			Name: logicalName,
+			URL:  archiveURL,
+			Checksum: Checksum{
+				Algorithm: ChecksumSHA256,
+				URL:       archiveURL + ".sha256",
+			},
+			ExtractTo: extractTo,
 		})
 	}
 	return archives, nil
