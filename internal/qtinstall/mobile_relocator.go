@@ -21,9 +21,27 @@ var androidNDKHostSettingPattern = regexp.MustCompile(
 	`(?m)^DEFAULT_ANDROID_NDK_HOST[ \t]*=[^\r\n]*`,
 )
 
-// AndroidRelocator connects an extracted Android Qt kit to the desktop Qt
-// tools that run on the selected host.
-type AndroidRelocator struct {
+type mobileTargetProfile struct {
+	displayName         string
+	requiredHost        qtrepo.Host
+	rewriteAndroidPaths bool
+}
+
+var mobileTargetProfiles = map[qtrepo.Target]mobileTargetProfile{
+	qtrepo.TargetAndroid: {
+		displayName:         "Android",
+		rewriteAndroidPaths: true,
+	},
+	qtrepo.TargetIOS: {
+		displayName:  "iOS",
+		requiredHost: qtrepo.HostMac,
+	},
+}
+
+// MobileRelocator connects an extracted mobile Qt kit to the desktop Qt tools
+// that run on the selected host.
+type MobileRelocator struct {
+	target mobileTargetProfile
 	hostQt hostQtInstallation
 }
 
@@ -46,69 +64,89 @@ type iniReplacement struct {
 	found   bool
 }
 
-// NewAndroidRelocator finds and validates the matching desktop Qt beneath the
+// NewMobileRelocator finds and validates the matching desktop Qt beneath the
 // version directory in qtRoot.
-func NewAndroidRelocator(
+func NewMobileRelocator(
+	target qtrepo.Target,
 	requirement qtrepo.QtInstallationIdentity,
 	qtRoot string,
-) (*AndroidRelocator, error) {
+) (*MobileRelocator, error) {
+	targetProfile, ok := mobileTargetProfiles[target]
+	if !ok {
+		return nil, fmt.Errorf("target %q is not a mobile Qt target", target)
+	}
+	if targetProfile.requiredHost != "" && requirement.Host != targetProfile.requiredHost {
+		return nil, fmt.Errorf(
+			"%s Qt requires host %q, not %q",
+			targetProfile.displayName,
+			targetProfile.requiredHost,
+			requirement.Host,
+		)
+	}
 	hostQt, err := discoverHostQt(requirement, qtRoot)
 	if err != nil {
 		return nil, err
 	}
 
-	return &AndroidRelocator{hostQt: hostQt}, nil
+	return &MobileRelocator{
+		target: targetProfile,
+		hostQt: hostQt,
+	}, nil
 }
 
-// Relocate rewrites one extracted Android Qt kit. Every affected file is
+// Relocate rewrites one extracted mobile Qt kit. Every affected file is
 // validated and staged before the first replacement is published.
-func (relocator *AndroidRelocator) Relocate(
+func (relocator *MobileRelocator) Relocate(
 	ctx context.Context,
 	kitDir string,
 ) (resultErr error) {
+	targetName := "mobile"
+	if relocator != nil {
+		targetName = relocator.target.displayName
+	}
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("relocate Android Qt kit: %w", err)
+		return fmt.Errorf("relocate %s Qt kit: %w", targetName, err)
 	}
 	if relocator == nil {
-		return fmt.Errorf("Android Qt relocator is not configured")
+		return fmt.Errorf("mobile Qt relocator is not configured")
 	}
 	if strings.TrimSpace(kitDir) == "" {
-		return fmt.Errorf("Android Qt kit directory must not be empty")
+		return fmt.Errorf("%s Qt kit directory must not be empty", targetName)
 	}
 	if strings.ContainsAny(kitDir, "\r\n\x00") {
-		return fmt.Errorf("Android Qt kit directory contains unsupported characters")
+		return fmt.Errorf("%s Qt kit directory contains unsupported characters", targetName)
 	}
 
 	absoluteKitDir, err := filepath.Abs(kitDir)
 	if err != nil {
-		return fmt.Errorf("resolve Android Qt kit directory %s: %w", kitDir, err)
+		return fmt.Errorf("resolve %s Qt kit directory %s: %w", targetName, kitDir, err)
 	}
 	info, err := os.Stat(absoluteKitDir)
 	if err != nil {
-		return fmt.Errorf("inspect Android Qt kit directory %s: %w", absoluteKitDir, err)
+		return fmt.Errorf("inspect %s Qt kit directory %s: %w", targetName, absoluteKitDir, err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("Android Qt kit path %s is not a directory", absoluteKitDir)
+		return fmt.Errorf("%s Qt kit path %s is not a directory", targetName, absoluteKitDir)
 	}
 
 	root, err := os.OpenRoot(absoluteKitDir)
 	if err != nil {
-		return fmt.Errorf("open Android Qt kit directory %s: %w", absoluteKitDir, err)
+		return fmt.Errorf("open %s Qt kit directory %s: %w", targetName, absoluteKitDir, err)
 	}
 	defer func() {
 		if err := root.Close(); err != nil && resultErr == nil {
-			resultErr = fmt.Errorf("close Android Qt kit directory %s: %w", absoluteKitDir, err)
+			resultErr = fmt.Errorf("close %s Qt kit directory %s: %w", targetName, absoluteKitDir, err)
 		}
 	}()
 
 	updates := make([]relocationFileUpdate, 0, 6)
 	for _, spec := range relocator.fileSpecs(absoluteKitDir) {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("relocate Android Qt kit: %w", err)
+			return fmt.Errorf("relocate %s Qt kit: %w", targetName, err)
 		}
 		update, changed, err := prepareRelocationFile(root, spec)
 		if err != nil {
-			return fmt.Errorf("prepare Android Qt relocation for %s: %w", spec.path, err)
+			return fmt.Errorf("prepare %s Qt relocation for %s: %w", targetName, spec.path, err)
 		}
 		if changed {
 			updates = append(updates, update)
@@ -116,12 +154,12 @@ func (relocator *AndroidRelocator) Relocate(
 	}
 
 	if err := applyRelocationFiles(ctx, root, updates); err != nil {
-		return fmt.Errorf("apply Android Qt relocation: %w", err)
+		return fmt.Errorf("apply %s Qt relocation: %w", targetName, err)
 	}
 	return nil
 }
 
-func (relocator *AndroidRelocator) fileSpecs(kitDir string) []relocationFileSpec {
+func (relocator *MobileRelocator) fileSpecs(kitDir string) []relocationFileSpec {
 	profile := relocator.hostQt.profile
 	specs := make([]relocationFileSpec, 0, 6)
 	wrappers := []struct {
@@ -142,25 +180,25 @@ func (relocator *AndroidRelocator) fileSpecs(kitDir string) []relocationFileSpec
 			},
 		})
 	}
-	specs = append(specs,
-		relocationFileSpec{
-			path: filepath.Join("bin", "target_qt.conf"),
-			transform: func(contents []byte) ([]byte, error) {
-				return rewriteTargetQtConfiguration(
-					contents,
-					kitDir,
-					relocator.hostQt.directory,
-					profile.hostLibraryExecutables,
-				)
-			},
+	specs = append(specs, relocationFileSpec{
+		path: filepath.Join("bin", "target_qt.conf"),
+		transform: func(contents []byte) ([]byte, error) {
+			return rewriteTargetQtConfiguration(
+				contents,
+				kitDir,
+				relocator.hostQt.directory,
+				profile.hostLibraryExecutables,
+			)
 		},
-		relocationFileSpec{
+	})
+	if relocator.target.rewriteAndroidPaths {
+		specs = append(specs, relocationFileSpec{
 			path: filepath.Join("mkspecs", "qdevice.pri"),
 			transform: func(contents []byte) ([]byte, error) {
 				return rewriteAndroidNDKHost(contents, profile.androidNDKHost)
 			},
-		},
-	)
+		})
+	}
 	return specs
 }
 

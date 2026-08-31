@@ -17,7 +17,7 @@ import (
 	"github.com/zengxs/yaqt/internal/qtrepo"
 )
 
-func TestAndroidRelocatorRewritesQtHostPaths(t *testing.T) {
+func TestMobileRelocatorRewritesAndroidQtHostPaths(t *testing.T) {
 	tests := []struct {
 		name                   string
 		host                   qtrepo.Host
@@ -35,9 +35,13 @@ func TestAndroidRelocatorRewritesQtHostPaths(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			qtRoot, hostQtDir, kitDir := createAndroidRelocationTree(t, test.host)
-			relocator, err := NewAndroidRelocator(testQtInstallationIdentity(test.host), qtRoot)
+			relocator, err := NewMobileRelocator(
+				qtrepo.TargetAndroid,
+				testQtInstallationIdentity(test.host),
+				qtRoot,
+			)
 			if err != nil {
-				t.Fatalf("NewAndroidRelocator() error = %v", err)
+				t.Fatalf("NewMobileRelocator() error = %v", err)
 			}
 			if relocator.hostQt.directory != hostQtDir {
 				t.Fatalf("discovered host Qt directory = %q, want %q", relocator.hostQt.directory, hostQtDir)
@@ -110,15 +114,19 @@ func TestAndroidRelocatorRewritesQtHostPaths(t *testing.T) {
 	}
 }
 
-func TestAndroidRelocatorPreflightsEveryFileBeforeWriting(t *testing.T) {
+func TestMobileRelocatorPreflightsEveryAndroidFileBeforeWriting(t *testing.T) {
 	qtRoot, _, kitDir := createAndroidRelocationTree(t, qtrepo.HostMac)
 	qdevicePath := filepath.Join(kitDir, "mkspecs", "qdevice.pri")
 	writeRelocationFile(t, qdevicePath, "DEFAULT_ANDROID_ABIS = arm64-v8a\n", 0o644)
 	before := snapshotRelocationTree(t, kitDir)
 
-	relocator, err := NewAndroidRelocator(testQtInstallationIdentity(qtrepo.HostMac), qtRoot)
+	relocator, err := NewMobileRelocator(
+		qtrepo.TargetAndroid,
+		testQtInstallationIdentity(qtrepo.HostMac),
+		qtRoot,
+	)
 	if err != nil {
-		t.Fatalf("NewAndroidRelocator() error = %v", err)
+		t.Fatalf("NewMobileRelocator() error = %v", err)
 	}
 	err = relocator.Relocate(context.Background(), kitDir)
 	if err == nil || !strings.Contains(err.Error(), "DEFAULT_ANDROID_NDK_HOST") {
@@ -134,7 +142,7 @@ func TestAndroidRelocatorPreflightsEveryFileBeforeWriting(t *testing.T) {
 	assertNoRelocationPartFiles(t, kitDir)
 }
 
-func TestAndroidRelocatorRejectsSymbolicLinksBeforeWriting(t *testing.T) {
+func TestMobileRelocatorRejectsAndroidSymbolicLinksBeforeWriting(t *testing.T) {
 	qtRoot, _, kitDir := createAndroidRelocationTree(t, qtrepo.HostMac)
 	qdevicePath := filepath.Join(kitDir, "mkspecs", "qdevice.pri")
 	outsidePath := filepath.Join(newTestCacheDir(t), "outside.pri")
@@ -148,9 +156,13 @@ func TestAndroidRelocatorRejectsSymbolicLinksBeforeWriting(t *testing.T) {
 	qmakePath := filepath.Join(kitDir, "bin", "qmake")
 	qmakeBefore := readRelocationFile(t, qmakePath)
 
-	relocator, err := NewAndroidRelocator(testQtInstallationIdentity(qtrepo.HostMac), qtRoot)
+	relocator, err := NewMobileRelocator(
+		qtrepo.TargetAndroid,
+		testQtInstallationIdentity(qtrepo.HostMac),
+		qtRoot,
+	)
 	if err != nil {
-		t.Fatalf("NewAndroidRelocator() error = %v", err)
+		t.Fatalf("NewMobileRelocator() error = %v", err)
 	}
 	err = relocator.Relocate(context.Background(), kitDir)
 	if err == nil || !strings.Contains(err.Error(), "symbolic link") {
@@ -165,11 +177,15 @@ func TestAndroidRelocatorRejectsSymbolicLinksBeforeWriting(t *testing.T) {
 	assertNoRelocationPartFiles(t, kitDir)
 }
 
-func TestAndroidRelocatorHonorsCanceledContext(t *testing.T) {
+func TestMobileRelocatorHonorsCanceledContext(t *testing.T) {
 	qtRoot, _, kitDir := createAndroidRelocationTree(t, qtrepo.HostLinux)
-	relocator, err := NewAndroidRelocator(testQtInstallationIdentity(qtrepo.HostLinux), qtRoot)
+	relocator, err := NewMobileRelocator(
+		qtrepo.TargetAndroid,
+		testQtInstallationIdentity(qtrepo.HostLinux),
+		qtRoot,
+	)
 	if err != nil {
-		t.Fatalf("NewAndroidRelocator() error = %v", err)
+		t.Fatalf("NewMobileRelocator() error = %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -183,7 +199,114 @@ func TestAndroidRelocatorHonorsCanceledContext(t *testing.T) {
 	}
 }
 
+func TestMobileRelocatorRewritesIOSQtHostPaths(t *testing.T) {
+	qtRoot, hostQtDir, kitDir := createIOSRelocationTree(t)
+	relocator, err := NewMobileRelocator(
+		qtrepo.TargetIOS,
+		testQtInstallationIdentity(qtrepo.HostMac),
+		qtRoot,
+	)
+	if err != nil {
+		t.Fatalf("NewMobileRelocator() error = %v", err)
+	}
+
+	if err := relocator.Relocate(context.Background(), kitDir); err != nil {
+		t.Fatalf("Relocate() error = %v", err)
+	}
+	for wrapper, hostTool := range map[string]string{
+		"qmake":    "qmake6",
+		"qmake6":   "qmake6",
+		"qtpaths":  "qtpaths6",
+		"qtpaths6": "qtpaths6",
+	} {
+		contents := readRelocationFile(t, filepath.Join(kitDir, "bin", wrapper))
+		wantToolPath := filepath.Join(hostQtDir, "bin", hostTool)
+		if !strings.Contains(contents, wantToolPath) {
+			t.Errorf("%s does not contain host tool path %q:\n%s", wrapper, wantToolPath, contents)
+		}
+	}
+	configuration := readRelocationFile(t, filepath.Join(kitDir, "bin", "target_qt.conf"))
+	for _, want := range []string{
+		"TargetSpec=macx-ios-clang",
+		"HostPrefix=" + filepath.ToSlash(hostQtDir),
+		"HostLibraryExecutables=libexec",
+		"HostData=" + filepath.ToSlash(kitDir),
+	} {
+		if !strings.Contains(configuration, want) {
+			t.Errorf("target_qt.conf does not contain %q:\n%s", want, configuration)
+		}
+	}
+	if got, want := readRelocationFile(t, filepath.Join(kitDir, "mkspecs", "qdevice.pri")), "GCC_MACHINE_DUMP = \n"; got != want {
+		t.Errorf("iOS qdevice.pri = %q, want %q", got, want)
+	}
+
+	before := snapshotRelocationTree(t, kitDir)
+	if err := relocator.Relocate(context.Background(), kitDir); err != nil {
+		t.Fatalf("second Relocate() error = %v", err)
+	}
+	after := snapshotRelocationTree(t, kitDir)
+	for path, want := range before {
+		if got := after[path]; got != want {
+			t.Errorf("second Relocate() changed %s", path)
+		}
+	}
+	assertNoRelocationPartFiles(t, kitDir)
+}
+
+func TestNewMobileRelocatorValidatesTargetHost(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		target qtrepo.Target
+		host   qtrepo.Host
+		want   string
+	}{
+		{name: "unsupported target", target: qtrepo.TargetDesktop, host: qtrepo.HostMac, want: "not a mobile Qt target"},
+		{name: "iOS non-macOS host", target: qtrepo.TargetIOS, host: qtrepo.HostLinux, want: "requires host \"mac\""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := NewMobileRelocator(
+				test.target,
+				testQtInstallationIdentity(test.host),
+				filepath.Join(newTestCacheDir(t), "Qt"),
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("NewMobileRelocator() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func createAndroidRelocationTree(t *testing.T, host qtrepo.Host) (string, string, string) {
+	return createMobileRelocationTree(
+		t,
+		host,
+		"android_arm64_v8a",
+		"android-clang",
+		`DEFAULT_ANDROID_SDK_ROOT = /opt/android/sdk
+DEFAULT_ANDROID_NDK_ROOT = /opt/android/android-ndk-r26b
+DEFAULT_ANDROID_NDK_HOST = darwin-x86_64
+DEFAULT_ANDROID_ABIS = arm64-v8a
+`,
+	)
+}
+
+func createIOSRelocationTree(t *testing.T) (string, string, string) {
+	return createMobileRelocationTree(
+		t,
+		qtrepo.HostMac,
+		"ios",
+		"macx-ios-clang",
+		"GCC_MACHINE_DUMP = \n",
+	)
+}
+
+func createMobileRelocationTree(
+	t *testing.T,
+	host qtrepo.Host,
+	kitDirectory,
+	targetSpec string,
+	qdeviceContents string,
+) (string, string, string) {
 	t.Helper()
 	root := newTestCacheDir(t)
 	qtRoot := filepath.Join(root, "Qt")
@@ -203,7 +326,7 @@ func createAndroidRelocationTree(t *testing.T, host qtrepo.Host) (string, string
 		0o644,
 	)
 
-	kitDir := filepath.Join(qtRoot, "6.8.0", "android_arm64_v8a")
+	kitDir := filepath.Join(qtRoot, "6.8.0", kitDirectory)
 	scriptExtension := ""
 	scriptContents := func(tool string) string {
 		return "#!/bin/sh\n/Users/qt/work/install/bin/" + tool + " -qtconf \"$script_dir_path/target_qt.conf\" $*\n"
@@ -236,13 +359,15 @@ HostBinaries=bin
 HostLibraries=lib
 HostLibraryExecutables=libexec
 HostData=target
-TargetSpec=android-clang
-`, 0o644)
-	writeRelocationFile(t, filepath.Join(kitDir, "mkspecs", "qdevice.pri"), `DEFAULT_ANDROID_SDK_ROOT = /opt/android/sdk
-DEFAULT_ANDROID_NDK_ROOT = /opt/android/android-ndk-r26b
-DEFAULT_ANDROID_NDK_HOST = darwin-x86_64
-DEFAULT_ANDROID_ABIS = arm64-v8a
-`, 0o644)
+TargetSpec=`+targetSpec+"\n", 0o644)
+	if qdeviceContents != "" {
+		writeRelocationFile(
+			t,
+			filepath.Join(kitDir, "mkspecs", "qdevice.pri"),
+			qdeviceContents,
+			0o644,
+		)
+	}
 	return qtRoot, hostQtDir, kitDir
 }
 

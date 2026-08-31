@@ -28,6 +28,7 @@ Select another Qt target when needed:
 
 ```console
 $ yaqt list-qt --target android
+$ yaqt list-qt --target ios
 ```
 
 The command prints stable Qt 6.8.0 or newer releases, one version per line in
@@ -36,7 +37,7 @@ package availability are validated later when a specific version is selected
 for installation. Repository layout details are selected automatically from the
 host and target. Android, WebAssembly, and shared Qt content are routed through
 Qt's platform-independent `all_os` repository without changing the user-visible
-host.
+host. The iOS repository is available only for the `mac` host.
 
 List the additional modules available for the current host's native desktop
 package:
@@ -49,12 +50,15 @@ qtmultimedia
 ```
 
 Module availability depends on the package variant. Use `--arch` to select an
-explicit desktop architecture, or select one Android ABI:
+explicit desktop architecture, select one Android ABI, or select the single
+iOS package variant:
 
 ```console
 $ yaqt list-modules 6.11.2 \
     --target android \
     --abi arm64-v8a
+
+$ yaqt list-modules 6.11.2 --target ios
 ```
 
 The command reads the corresponding `Updates.xml` and prints additional
@@ -94,16 +98,34 @@ $ yaqt install-qt 6.8.0 \
     --root /opt/Qt
 ```
 
+Install the single iOS Qt package variant on macOS:
+
+```console
+$ yaqt install-qt 6.11.2 \
+    --target ios \
+    --root /opt/Qt
+```
+
 The root is the directory that contains versioned Qt installations, so it must
-not include `6.8.0` itself. Before downloading, yaqt searches `/opt/Qt/6.8.0`
-for exactly one desktop Qt installation for the current host. That installation
-must contain `bin/qmake6` and `bin/qtpaths6` (with `.exe` suffixes on Windows).
-yaqt does not install this dependency automatically yet; run an explicit
-`--target desktop` installation first when it is missing. yaqt reports an error
-if no matching desktop Qt or multiple candidates are present. A complete
-installation downloads and verifies every selected archive, extracts the
-Android kit to `/opt/Qt/6.8.0/android_arm64_v8a`, and relocates its Qt tool
-wrappers and configuration files to the discovered desktop Qt.
+not include the version directory itself. Before downloading a mobile Qt kit,
+yaqt searches the corresponding version directory for exactly one desktop Qt
+installation for the current host. That installation must contain `bin/qmake6`
+and `bin/qtpaths6` (with `.exe` suffixes on Windows). yaqt does not install this
+dependency automatically yet; run an explicit `--target desktop` installation
+first when it is missing. yaqt reports an error if no matching desktop Qt or
+multiple candidates are present.
+
+A complete Android installation extracts each selected ABI to a directory such
+as `/opt/Qt/6.8.0/android_arm64_v8a`. An iOS installation is available only for
+the `mac` host and extracts its single package variant to
+`/opt/Qt/6.11.2/ios`. Both targets relocate their Qt tool wrappers and
+configuration files to the discovered desktop Qt. yaqt installs Qt for iOS but
+does not install Xcode, Apple platform SDKs, signing certificates, or
+provisioning profiles. After installation, use
+`<root>/<version>/ios/bin/qtpaths6 --query` to inspect the resolved Qt paths and
+`<root>/<version>/ios/bin/qt-cmake` to configure an Xcode project. See the
+official [Qt for iOS guide](https://doc.qt.io/qt-6/ios.html) for Xcode and
+deployment requirements.
 
 Plan an Android installation without downloading or changing any files:
 
@@ -116,8 +138,9 @@ $ yaqt install-qt 6.8.0 \
 ```
 
 The `--abi` flag accepts `arm64-v8a`, `armeabi-v7a`, `x86`, or `x86_64` and may
-be repeated. Additional Qt modules may be selected for either desktop or
-Android installations with a repeatable `--module` flag:
+be repeated. The iOS target accepts neither `--abi` nor `--arch`. Additional Qt
+modules may be selected for desktop, Android, or iOS installations with a
+repeatable `--module` flag:
 
 ```console
 $ yaqt install-qt 6.8.0 \
@@ -161,8 +184,8 @@ The extractor accepts regular files, directories, and safe relative symbolic
 links. It rejects archive paths or link targets that resolve outside the
 destination, rejects other special files, and preserves safe permission and
 executable bits.
-This mode deliberately stops before Android path relocation, so its output is
-not a complete Qt installation.
+This mode deliberately stops before target-specific path relocation, so its
+output is not a complete Qt installation.
 
 ## Relationship to Qt
 

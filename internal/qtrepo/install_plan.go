@@ -27,6 +27,7 @@ type InstallPlan struct {
 	HostQt      *QtInstallationIdentity
 	DesktopKit  *DesktopKit
 	AndroidKits []AndroidKit
+	IOSKit      *IOSKit
 }
 
 // QtInstallationIdentity identifies a Qt installation by host and version.
@@ -45,6 +46,12 @@ type DesktopKit struct {
 // AndroidKit contains the artifacts for one Android ABI.
 type AndroidKit struct {
 	ABI         AndroidABI
+	Destination string
+	Packages    []PackageSelection
+}
+
+// IOSKit contains the artifacts for one iOS Qt installation.
+type IOSKit struct {
 	Destination string
 	Packages    []PackageSelection
 }
@@ -102,7 +109,10 @@ func (c *Client) ResolveInstall(ctx context.Context, request InstallRequest) (In
 	destination := filepath.Clean(request.Destination)
 	operations, ok := packageTargets[request.Repository.Target]
 	if !ok {
-		return InstallPlan{}, fmt.Errorf("installation planning supports only the desktop and Android targets")
+		return InstallPlan{}, fmt.Errorf(
+			"installation planning does not support target %q",
+			request.Repository.Target,
+		)
 	}
 	return operations.planInstall(c, ctx, request, modules, destination)
 }

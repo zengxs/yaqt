@@ -30,7 +30,10 @@ func (c *Client) ListModules(
 
 	operations, ok := packageTargets[request.Repository.Target]
 	if !ok {
-		return nil, fmt.Errorf("module listing supports only the desktop and Android targets")
+		return nil, fmt.Errorf(
+			"module listing does not support target %q",
+			request.Repository.Target,
+		)
 	}
 	metadata, err := operations.resolveModuleVariant(request)
 	if err != nil {

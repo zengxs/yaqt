@@ -26,4 +26,8 @@ var packageTargets = map[Target]packageTargetOperations{
 		planInstall:          (*Client).resolveAndroidInstall,
 		resolveModuleVariant: androidModuleVariant,
 	},
+	TargetIOS: {
+		planInstall:          (*Client).resolveIOSInstall,
+		resolveModuleVariant: iosModuleVariant,
+	},
 }

@@ -74,6 +74,61 @@ func TestListModulesAndroidCommandUsesSelectedABI(t *testing.T) {
 	}
 }
 
+func TestListModulesIOSCommand(t *testing.T) {
+	output := &bytes.Buffer{}
+	client := &stubRepositoryClient{modules: []string{"qtmultimedia"}}
+	command := newCommand(
+		commandDependencies{moduleLister: client},
+		qtrepo.HostMac,
+		output,
+		&bytes.Buffer{},
+	)
+
+	err := command.Run(context.Background(), []string{
+		"yaqt",
+		"list-modules",
+		"6.11.2",
+		"--target", "ios",
+	})
+	if err != nil {
+		t.Fatalf("command.Run() error = %v", err)
+	}
+	if got, want := output.String(), "qtmultimedia\n"; got != want {
+		t.Errorf("output = %q, want %q", got, want)
+	}
+	request := client.moduleRequest
+	if got, want := request.Repository.IndexURL(), qtrepo.DefaultBaseURL+"/online/qtsdkrepository/mac_x64/ios/"; got != want {
+		t.Errorf("repository URL = %q, want %q", got, want)
+	}
+	if request.DesktopArchitecture != "" {
+		t.Errorf("desktop architecture = %q, want none", request.DesktopArchitecture)
+	}
+	if request.AndroidABI != "" {
+		t.Errorf("Android ABI = %q, want none", request.AndroidABI)
+	}
+}
+
+func TestListModulesIOSRejectsArchitectureFlags(t *testing.T) {
+	for _, flag := range [][]string{
+		{"--arch", "clang_64"},
+		{"--abi", "arm64-v8a"},
+	} {
+		t.Run(flag[0], func(t *testing.T) {
+			command := newCommand(
+				commandDependencies{moduleLister: &stubRepositoryClient{}},
+				qtrepo.HostMac,
+				&bytes.Buffer{},
+				&bytes.Buffer{},
+			)
+			args := []string{"yaqt", "list-modules", "6.11.2", "--target", "ios"}
+			args = append(args, flag...)
+			if err := command.Run(context.Background(), args); err == nil {
+				t.Fatalf("command.Run() error = nil, want %s to be rejected", flag[0])
+			}
+		})
+	}
+}
+
 func TestListModulesRejectsTargetSpecificArchitectureFlags(t *testing.T) {
 	tests := []struct {
 		name string
@@ -130,7 +185,7 @@ func TestListModulesRejectsInvalidInvocation(t *testing.T) {
 		{
 			name: "unsupported target",
 			args: []string{"yaqt", "list-modules", "6.8.0", "--target", "wasm"},
-			want: "choose desktop or android",
+			want: "unsupported Qt package target",
 		},
 		{
 			name: "duplicate Android ABI",

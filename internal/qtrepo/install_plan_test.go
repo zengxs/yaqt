@@ -165,6 +165,107 @@ func TestClientResolveDesktopInstallPlan(t *testing.T) {
 	}
 }
 
+func TestClientResolveIOSInstallPlan(t *testing.T) {
+	server := newMetadataServer(
+		t,
+		"/mirror/online/qtsdkrepository/mac_x64/ios/qt6_6112/qt6_6112/Updates.xml",
+		"testdata/ios-6.11.2-updates.xml",
+	)
+	defer server.Close()
+
+	repository, err := NewRepository(server.URL+"/mirror", HostMac, TargetIOS)
+	if err != nil {
+		t.Fatalf("NewRepository() error = %v", err)
+	}
+	plan, err := NewClient(server.Client()).ResolveInstall(context.Background(), InstallRequest{
+		Repository:  repository,
+		Version:     Version{Major: 6, Minor: 11, Patch: 2},
+		Modules:     []string{"qtmultimedia"},
+		Destination: "/opt/Qt",
+	})
+	if err != nil {
+		t.Fatalf("ResolveInstall() error = %v", err)
+	}
+
+	if got, want := plan.Target, TargetIOS; got != want {
+		t.Errorf("plan.Target = %q, want %q", got, want)
+	}
+	if got, want := plan.Host, HostMac; got != want {
+		t.Errorf("plan.Host = %q, want %q", got, want)
+	}
+	if plan.HostQt == nil {
+		t.Fatal("plan.HostQt = nil, want a desktop Qt requirement")
+	}
+	if got, want := *plan.HostQt, (QtInstallationIdentity{
+		Host:    HostMac,
+		Version: Version{Major: 6, Minor: 11, Patch: 2},
+	}); got != want {
+		t.Errorf("plan.HostQt = %+v, want %+v", got, want)
+	}
+	if plan.IOSKit == nil {
+		t.Fatal("plan.IOSKit = nil, want an iOS kit")
+	}
+
+	kit := plan.IOSKit
+	if got, want := kit.Destination, filepath.Join("/opt/Qt", "6.11.2", "ios"); got != want {
+		t.Errorf("iOS destination = %q, want %q", got, want)
+	}
+	if got, want := len(kit.Packages), 2; got != want {
+		t.Fatalf("len(iOS packages) = %d, want %d", got, want)
+	}
+	if got, want := kit.Packages[0].Name, "qt.qt6.6112.ios"; got != want {
+		t.Errorf("base package name = %q, want %q", got, want)
+	}
+	if got, want := kit.Packages[1].Name, "qt.qt6.6112.addons.qtmultimedia.ios"; got != want {
+		t.Errorf("module package name = %q, want %q", got, want)
+	}
+	if got, want := kit.Packages[1].Module, "qtmultimedia"; got != want {
+		t.Errorf("module package module = %q, want %q", got, want)
+	}
+	if got, want := archiveNames(flattenArchives(kit.Packages)), []string{"qtbase", "qtsvg", "qtmultimedia"}; !equalStrings(got, want) {
+		t.Fatalf("archive names = %v, want %v", got, want)
+	}
+
+	first := kit.Packages[0].Archives[0]
+	wantURL := server.URL + "/mirror/online/qtsdkrepository/mac_x64/ios/qt6_6112/qt6_6112/" +
+		"qt.qt6.6112.ios/6.11.2-0-202608131016qtbase-MacOS-MacOS_14-Clang-IOS-IOS_ANY-ARM64.7z"
+	if got := first.URL; got != wantURL {
+		t.Errorf("archive URL = %q, want %q", got, wantURL)
+	}
+	if got, want := first.Checksum.URL, wantURL+".sha256"; got != want {
+		t.Errorf("checksum URL = %q, want %q", got, want)
+	}
+	if got, want := first.ExtractTo, filepath.Join("/opt/Qt", "6.11.2", "ios"); got != want {
+		t.Errorf("archive ExtractTo = %q, want %q", got, want)
+	}
+}
+
+func TestClientResolveIOSInstallPlanRejectsTargetSpecificArchitectures(t *testing.T) {
+	repository, err := NewRepository(DefaultBaseURL, HostMac, TargetIOS)
+	if err != nil {
+		t.Fatalf("NewRepository() error = %v", err)
+	}
+
+	for _, request := range []InstallRequest{
+		{
+			Repository:          repository,
+			Version:             Version{Major: 6, Minor: 11, Patch: 2},
+			DesktopArchitecture: DesktopArchitectureMacClang64,
+			Destination:         "/opt/Qt",
+		},
+		{
+			Repository:  repository,
+			Version:     Version{Major: 6, Minor: 11, Patch: 2},
+			AndroidABIs: []AndroidABI{AndroidABIArm64V8A},
+			Destination: "/opt/Qt",
+		},
+	} {
+		if _, err := NewClient(nil).ResolveInstall(context.Background(), request); err == nil {
+			t.Fatalf("ResolveInstall(%+v) error = nil, want an architecture option error", request)
+		}
+	}
+}
+
 func TestClientResolveDesktopInstallPlanUsesLegacyQt680ArchiveLayout(t *testing.T) {
 	server := newMetadataServer(
 		t,

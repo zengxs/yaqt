@@ -54,6 +54,30 @@ func TestClientListAndroidModules(t *testing.T) {
 	}
 }
 
+func TestClientListIOSModules(t *testing.T) {
+	server := newMetadataServer(
+		t,
+		"/online/qtsdkrepository/mac_x64/ios/qt6_6112/qt6_6112/Updates.xml",
+		"testdata/ios-6.11.2-updates.xml",
+	)
+	defer server.Close()
+
+	repository, err := NewRepository(server.URL, HostMac, TargetIOS)
+	if err != nil {
+		t.Fatalf("NewRepository() error = %v", err)
+	}
+	modules, err := NewClient(server.Client()).ListModules(context.Background(), ModuleRequest{
+		Repository: repository,
+		Version:    Version{Major: 6, Minor: 11, Patch: 2},
+	})
+	if err != nil {
+		t.Fatalf("ListModules() error = %v", err)
+	}
+	if got, want := modules, []string{"qtmultimedia"}; !equalStrings(got, want) {
+		t.Errorf("ListModules() = %v, want %v", got, want)
+	}
+}
+
 func TestAvailableModuleNamesFiltersAndSortsInstallablePackages(t *testing.T) {
 	version := Version{Major: 6, Minor: 11, Patch: 2}
 	metadata := newPackageVariantMetadata(

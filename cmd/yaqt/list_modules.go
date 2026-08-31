@@ -34,7 +34,7 @@ func newListModulesCommand(
 			&cli.StringFlag{
 				Name:  "target",
 				Value: string(qtrepo.TargetDesktop),
-				Usage: "Qt `target`: desktop or android",
+				Usage: "Qt `target`: desktop, android, or ios",
 			},
 			&cli.StringFlag{
 				Name:  "arch",

@@ -328,6 +328,112 @@ func TestInstallQtDesktopDryRunUsesNativeArchitecture(t *testing.T) {
 	}
 }
 
+func TestInstallQtIOSDryRun(t *testing.T) {
+	output := &bytes.Buffer{}
+	root, err := filepath.Abs(filepath.Join(".tmp", "ios-cli-root"))
+	if err != nil {
+		t.Fatalf("filepath.Abs() error = %v", err)
+	}
+	kitDir := filepath.Join(root, "6.11.2", "ios")
+	client := &stubRepositoryClient{
+		installPlan: qtrepo.InstallPlan{
+			Version: qtrepo.Version{Major: 6, Minor: 11, Patch: 2},
+			Host:    qtrepo.HostMac,
+			Target:  qtrepo.TargetIOS,
+			HostQt: &qtrepo.QtInstallationIdentity{
+				Host:    qtrepo.HostMac,
+				Version: qtrepo.Version{Major: 6, Minor: 11, Patch: 2},
+			},
+			IOSKit: &qtrepo.IOSKit{
+				Destination: kitDir,
+				Packages: []qtrepo.PackageSelection{
+					{
+						Name: "qt.qt6.6112.ios",
+						Archives: []qtrepo.Archive{
+							{
+								Name:      "qtbase",
+								URL:       "https://mirror.example/qtbase.7z",
+								ExtractTo: kitDir,
+								Checksum: qtrepo.Checksum{
+									Algorithm: qtrepo.ChecksumSHA256,
+									URL:       "https://mirror.example/qtbase.7z.sha256",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	command := newCommand(
+		commandDependencies{
+			install: installCommandDependencies{resolver: client},
+		},
+		qtrepo.HostMac,
+		output,
+		&bytes.Buffer{},
+	)
+
+	err = command.Run(context.Background(), []string{
+		"yaqt",
+		"install-qt",
+		"6.11.2",
+		"--target", "ios",
+		"--root", root,
+		"--dry-run",
+	})
+	if err != nil {
+		t.Fatalf("command.Run() error = %v", err)
+	}
+
+	request := client.installRequest
+	if request.DesktopArchitecture != "" {
+		t.Errorf("DesktopArchitecture = %q, want none", request.DesktopArchitecture)
+	}
+	if len(request.AndroidABIs) != 0 {
+		t.Errorf("AndroidABIs = %v, want none", request.AndroidABIs)
+	}
+	for _, want := range []string{
+		"Qt 6.11.2 for ios on mac",
+		"Host Qt requirement: mac desktop 6.11.2",
+		"ios -> " + kitDir,
+		"base package: qt.qt6.6112.ios",
+		"Post-install: relocate iOS Qt paths and connect the kit to the matching host Qt.",
+	} {
+		if !bytes.Contains(output.Bytes(), []byte(want)) {
+			t.Errorf("output does not contain %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestInstallQtIOSRejectsArchitectureFlags(t *testing.T) {
+	for _, flag := range [][]string{
+		{"--arch", "clang_64"},
+		{"--abi", "arm64-v8a"},
+	} {
+		t.Run(flag[0], func(t *testing.T) {
+			command := newCommand(
+				commandDependencies{
+					install: installCommandDependencies{resolver: &stubRepositoryClient{}},
+				},
+				qtrepo.HostMac,
+				&bytes.Buffer{},
+				&bytes.Buffer{},
+			)
+			args := []string{
+				"yaqt", "install-qt", "6.11.2",
+				"--target", "ios",
+				"--root", filepath.Join(".tmp", "Qt"),
+				"--dry-run",
+			}
+			args = append(args, flag...)
+			if err := command.Run(context.Background(), args); err == nil {
+				t.Fatalf("command.Run() error = nil, want %s to be rejected", flag[0])
+			}
+		})
+	}
+}
+
 func TestInstallQtRejectsTargetSpecificArchitectureFlags(t *testing.T) {
 	tests := []struct {
 		name string

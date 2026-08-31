@@ -43,6 +43,10 @@ var targetHandlers = map[qtrepo.Target]targetHandlerSet{
 		module:  androidModuleRequestBuilder{},
 		install: androidInstallTargetHandler{},
 	},
+	qtrepo.TargetIOS: {
+		module:  iosModuleRequestBuilder{},
+		install: iosInstallTargetHandler{},
+	},
 }
 
 func moduleRequestBuilderFor(target qtrepo.Target) (moduleRequestBuilder, error) {
@@ -65,7 +69,7 @@ func targetHandlersFor(target qtrepo.Target) (targetHandlerSet, error) {
 	handlers, ok := targetHandlers[target]
 	if !ok {
 		return targetHandlerSet{}, fmt.Errorf(
-			"unsupported Qt package target %q (choose desktop or android)",
+			"unsupported Qt package target %q",
 			target,
 		)
 	}
@@ -209,11 +213,72 @@ func (androidInstallTargetHandler) newRelocator(
 	if plan.HostQt == nil {
 		return nil, fmt.Errorf("Android install plan has no host Qt identity")
 	}
-	return qtinstall.NewAndroidRelocator(*plan.HostQt, qtRoot)
+	return qtinstall.NewMobileRelocator(qtrepo.TargetAndroid, *plan.HostQt, qtRoot)
 }
 
 func (androidInstallTargetHandler) postInstallDescription() string {
 	return "relocate Android Qt paths and connect each kit to the matching host Qt"
+}
+
+type iosModuleRequestBuilder struct{}
+
+func (iosModuleRequestBuilder) moduleRequest(
+	command *cli.Command,
+	repository qtrepo.Repository,
+	version qtrepo.Version,
+) (qtrepo.ModuleRequest, error) {
+	if err := rejectDesktopArchitecture(command); err != nil {
+		return qtrepo.ModuleRequest{}, err
+	}
+	if command.String("abi") != "" {
+		return qtrepo.ModuleRequest{}, fmt.Errorf("--abi can be used only with --target android")
+	}
+	return qtrepo.ModuleRequest{
+		Repository: repository,
+		Version:    version,
+	}, nil
+}
+
+type iosInstallTargetHandler struct{}
+
+func (iosInstallTargetHandler) installRequest(
+	command *cli.Command,
+	repository qtrepo.Repository,
+	version qtrepo.Version,
+	destination string,
+) (qtrepo.InstallRequest, error) {
+	if err := rejectDesktopArchitecture(command); err != nil {
+		return qtrepo.InstallRequest{}, err
+	}
+	if len(command.StringSlice("abi")) != 0 {
+		return qtrepo.InstallRequest{}, fmt.Errorf("--abi can be used only with --target android")
+	}
+	return newInstallRequest(command, repository, version, destination, "", nil), nil
+}
+
+func (iosInstallTargetHandler) installPlanKits(plan qtrepo.InstallPlan) ([]installPlanKit, error) {
+	if plan.IOSKit == nil {
+		return nil, fmt.Errorf("iOS install plan contains no iOS kit")
+	}
+	return []installPlanKit{{
+		architecture: string(qtrepo.TargetIOS),
+		destination:  plan.IOSKit.Destination,
+		packages:     plan.IOSKit.Packages,
+	}}, nil
+}
+
+func (iosInstallTargetHandler) newRelocator(
+	plan qtrepo.InstallPlan,
+	qtRoot string,
+) (installRelocator, error) {
+	if plan.HostQt == nil {
+		return nil, fmt.Errorf("iOS install plan has no host Qt identity")
+	}
+	return qtinstall.NewMobileRelocator(qtrepo.TargetIOS, *plan.HostQt, qtRoot)
+}
+
+func (iosInstallTargetHandler) postInstallDescription() string {
+	return "relocate iOS Qt paths and connect the kit to the matching host Qt"
 }
 
 func desktopArchitectureFromCommand(

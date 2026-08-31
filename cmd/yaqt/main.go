@@ -172,8 +172,8 @@ func newInstallQtCommand(
 		Name:      "install-qt",
 		Usage:     "Install or materialize a Qt SDK installation",
 		ArgsUsage: "VERSION",
-		Description: "Resolve and install native desktop Qt or Android Qt kits. " +
-			"Android installation uses an existing matching desktop Qt. " +
+		Description: "Resolve and install native desktop, Android, or iOS Qt kits. " +
+			"Mobile installation uses an existing matching desktop Qt. " +
 			"The command can also stop after planning, downloading, or extraction.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
@@ -183,7 +183,7 @@ func newInstallQtCommand(
 			},
 			&cli.StringFlag{
 				Name:     "target",
-				Usage:    "Qt `target`: desktop or android",
+				Usage:    "Qt `target`: desktop, android, or ios",
 				Required: true,
 			},
 			&cli.StringFlag{

@@ -1,0 +1,38 @@
+<Updates>
+ <PackageUpdate>
+  <Name>qt.qt6.6112.addons.qtmultimedia</Name>
+  <Version>6.11.2-0-202608131016</Version>
+  <DownloadableArchives/>
+ </PackageUpdate>
+ <PackageUpdate>
+  <Name>qt.qt6.6112.addons.qtmultimedia.ios</Name>
+  <Version>6.11.2-0-202608131016</Version>
+  <DownloadableArchives>qtmultimedia-MacOS-MacOS_14-Clang-IOS-IOS_ANY-ARM64.7z</DownloadableArchives>
+  <Operations>
+   <Operation name="Extract">
+    <Argument>@TargetDir@/6.11.2/ios</Argument>
+    <Argument>qtmultimedia-MacOS-MacOS_14-Clang-IOS-IOS_ANY-ARM64.7z</Argument>
+   </Operation>
+  </Operations>
+ </PackageUpdate>
+ <PackageUpdate>
+  <Name>qt.qt6.6112.addons.qtspeech.ios</Name>
+  <Version>6.11.2-0-202608131016</Version>
+  <DownloadableArchives/>
+ </PackageUpdate>
+ <PackageUpdate>
+  <Name>qt.qt6.6112.ios</Name>
+  <Version>6.11.2-0-202608131016</Version>
+  <DownloadableArchives>qtbase-MacOS-MacOS_14-Clang-IOS-IOS_ANY-ARM64.7z, qtsvg-MacOS-MacOS_14-Clang-IOS-IOS_ANY-ARM64.7z</DownloadableArchives>
+  <Operations>
+   <Operation name="Extract">
+    <Argument>@TargetDir@/6.11.2/ios</Argument>
+    <Argument>qtbase-MacOS-MacOS_14-Clang-IOS-IOS_ANY-ARM64.7z</Argument>
+   </Operation>
+   <Operation name="Extract">
+    <Argument>@TargetDir@/6.11.2/ios</Argument>
+    <Argument>qtsvg-MacOS-MacOS_14-Clang-IOS-IOS_ANY-ARM64.7z</Argument>
+   </Operation>
+  </Operations>
+ </PackageUpdate>
+</Updates>
