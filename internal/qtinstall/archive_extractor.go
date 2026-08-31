@@ -283,7 +283,7 @@ func extractRegularFile(ctx context.Context, root *os.Root, entry extractionEntr
 	}
 	partialOpen = false
 
-	if err := publishExtractedFile(root, partialPath, entry.relativePath); err != nil {
+	if err := publishRegularFile(root, partialPath, entry.relativePath); err != nil {
 		return err
 	}
 	return nil
@@ -303,16 +303,16 @@ func createPartialFile(root *os.Root, target string) (*os.File, string, error) {
 	return file, partialPath, nil
 }
 
-func publishExtractedFile(root *os.Root, partialPath, target string) error {
+func publishRegularFile(root *os.Root, partialPath, target string) error {
 	if err := root.Rename(partialPath, target); err == nil {
 		return nil
 	} else {
 		info, inspectErr := root.Lstat(target)
 		if inspectErr != nil {
-			return fmt.Errorf("publish decompressed file: %w", err)
+			return fmt.Errorf("publish file: %w", err)
 		}
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("publish decompressed file: target has mode %s", info.Mode())
+			return fmt.Errorf("publish file: target has mode %s", info.Mode())
 		}
 		if removeErr := root.Remove(target); removeErr != nil {
 			return fmt.Errorf("replace existing file: %w", removeErr)

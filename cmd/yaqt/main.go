@@ -23,14 +23,26 @@ func main() {
 	}
 
 	client := qtrepo.NewClient(&http.Client{Timeout: 30 * time.Second})
-	fetcherFactory := archiveFetcherFactory(func(cacheDir string) (archiveFetcher, error) {
-		return qtinstall.NewArchiveStore(nil, cacheDir)
-	})
+	installDependencies := installCommandDependencies{
+		resolver: client,
+		fetcherFactory: func(cacheDir string) (archiveFetcher, error) {
+			return qtinstall.NewArchiveStore(nil, cacheDir)
+		},
+		extractor: qtinstall.SevenZipExtractor{},
+		relocatorFactory: func(
+			requirement qtrepo.HostQtRequirement,
+			qtRoot string,
+		) (androidRelocator, error) {
+			relocator, err := qtinstall.NewAndroidRelocator(requirement, qtRoot)
+			if err != nil {
+				return nil, err
+			}
+			return relocator, nil
+		},
+	}
 	command := newCommand(
 		client,
-		client,
-		fetcherFactory,
-		qtinstall.SevenZipExtractor{},
+		installDependencies,
 		defaultHost,
 		os.Stdout,
 		os.Stderr,
@@ -59,19 +71,31 @@ type archiveExtractor interface {
 	Extract(context.Context, string, string) error
 }
 
+type androidRelocator interface {
+	Relocate(context.Context, string) error
+}
+
+type androidRelocatorFactory func(qtrepo.HostQtRequirement, string) (androidRelocator, error)
+
+type installCommandDependencies struct {
+	resolver         installResolver
+	fetcherFactory   archiveFetcherFactory
+	extractor        archiveExtractor
+	relocatorFactory androidRelocatorFactory
+}
+
 type installExecutionMode uint8
 
 const (
-	installExecutionModeDryRun installExecutionMode = iota + 1
+	installExecutionModeInstall installExecutionMode = iota + 1
+	installExecutionModeDryRun
 	installExecutionModeDownloadOnly
 	installExecutionModeExtractOnly
 )
 
 func newCommand(
 	lister versionLister,
-	resolver installResolver,
-	fetcherFactory archiveFetcherFactory,
-	extractor archiveExtractor,
+	installDependencies installCommandDependencies,
 	defaultHost qtrepo.Host,
 	output,
 	errorOutput io.Writer,
@@ -85,7 +109,11 @@ func newCommand(
 		Suggest:   true,
 		Commands: []*cli.Command{
 			newListQtCommand(lister, defaultHost, output),
-			newInstallQtCommand(resolver, fetcherFactory, extractor, defaultHost, output),
+			newInstallQtCommand(
+				installDependencies,
+				defaultHost,
+				output,
+			),
 		},
 	}
 }
@@ -136,19 +164,17 @@ func newListQtCommand(lister versionLister, defaultHost qtrepo.Host, output io.W
 }
 
 func newInstallQtCommand(
-	resolver installResolver,
-	fetcherFactory archiveFetcherFactory,
-	extractor archiveExtractor,
+	dependencies installCommandDependencies,
 	defaultHost qtrepo.Host,
 	output io.Writer,
 ) *cli.Command {
 	return &cli.Command{
 		Name:      "install-qt",
-		Usage:     "Plan, download, or extract a Qt SDK installation",
+		Usage:     "Install or materialize a Qt SDK installation",
 		ArgsUsage: "VERSION",
 		Description: "Resolve the Qt archives, extraction paths, and host Qt requirement for an Android installation. " +
-			"The command can print the plan, download and verify its archives, or extract them. " +
-			"Android path relocation is not yet available.",
+			"The command installs and relocates an Android Qt kit using an existing matching desktop Qt. " +
+			"It can also stop after planning, downloading, or extraction.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "host",
@@ -171,9 +197,9 @@ func newInstallQtCommand(
 				Usage:   "Additional Qt `module`; may be repeated",
 			},
 			&cli.StringFlag{
-				Name:  "output-dir",
-				Value: ".",
-				Usage: "Installation root `DIR`",
+				Name:     "root",
+				Usage:    "Qt installation root `DIR`; must not include the version directory",
+				Required: true,
 			},
 			&cli.StringFlag{
 				Name:  "base-url",
@@ -205,8 +231,11 @@ func newInstallQtCommand(
 			if err != nil {
 				return err
 			}
-
 			version, err := qtrepo.ParseVersion(command.Args().First())
+			if err != nil {
+				return err
+			}
+			installRoot, err := qtinstall.ResolveInstallRoot(command.String("root"), version)
 			if err != nil {
 				return err
 			}
@@ -216,6 +245,18 @@ func newInstallQtCommand(
 			}
 			if repository.Target != qtrepo.TargetAndroid {
 				return fmt.Errorf("install-qt currently supports only the Android target")
+			}
+			if mode == installExecutionModeInstall {
+				if repository.Host != defaultHost {
+					return fmt.Errorf(
+						"complete installation host %q does not match the current host %q; use --download-only or --extract-only for cross-host materialization",
+						repository.Host,
+						defaultHost,
+					)
+				}
+				if dependencies.relocatorFactory == nil {
+					return fmt.Errorf("Android Qt relocator is not configured")
+				}
 			}
 
 			abiValues := command.StringSlice("abi")
@@ -227,12 +268,12 @@ func newInstallQtCommand(
 				}
 				abis = append(abis, abi)
 			}
-			plan, err := resolver.ResolveInstall(ctx, qtrepo.InstallRequest{
+			plan, err := dependencies.resolver.ResolveInstall(ctx, qtrepo.InstallRequest{
 				Repository:  repository,
 				Version:     version,
 				AndroidABIs: abis,
 				Modules:     command.StringSlice("module"),
-				Destination: command.String("output-dir"),
+				Destination: installRoot,
 			})
 			if err != nil {
 				return err
@@ -240,22 +281,38 @@ func newInstallQtCommand(
 			if mode == installExecutionModeDryRun {
 				return printInstallPlan(output, plan)
 			}
+			var relocator androidRelocator
+			if mode == installExecutionModeInstall {
+				relocator, err = dependencies.relocatorFactory(plan.HostQt, installRoot)
+				if err != nil {
+					return fmt.Errorf("configure Android Qt relocation: %w", err)
+				}
+			}
 
 			cacheDir, err := qtinstall.ResolveCacheDir(command.String("cache-dir"))
 			if err != nil {
 				return err
 			}
-			if fetcherFactory == nil {
+			if dependencies.fetcherFactory == nil {
 				return fmt.Errorf("archive downloader is not configured")
 			}
-			fetcher, err := fetcherFactory(cacheDir)
+			fetcher, err := dependencies.fetcherFactory(cacheDir)
 			if err != nil {
 				return fmt.Errorf("configure archive cache: %w", err)
 			}
-			if mode == installExecutionModeExtractOnly && extractor == nil {
+			if mode != installExecutionModeDownloadOnly && dependencies.extractor == nil {
 				return fmt.Errorf("archive extractor is not configured")
 			}
-			return materializeInstallPlan(ctx, output, plan, cacheDir, fetcher, extractor, mode)
+			return materializeInstallPlan(
+				ctx,
+				output,
+				plan,
+				cacheDir,
+				fetcher,
+				dependencies.extractor,
+				relocator,
+				mode,
+			)
 		},
 	}
 }
@@ -281,9 +338,7 @@ func requestedInstallExecutionMode(command *cli.Command) (installExecutionMode, 
 		selected = candidate.mode
 	}
 	if selected == 0 {
-		return 0, fmt.Errorf(
-			"installation is not implemented yet; use --dry-run, --download-only, or --extract-only",
-		)
+		return installExecutionModeInstall, nil
 	}
 	return selected, nil
 }
@@ -355,8 +410,25 @@ func materializeInstallPlan(
 	cacheDir string,
 	fetcher archiveFetcher,
 	extractor archiveExtractor,
+	relocator androidRelocator,
 	mode installExecutionMode,
 ) error {
+	if fetcher == nil {
+		return fmt.Errorf("archive downloader is not configured")
+	}
+	switch mode {
+	case installExecutionModeDownloadOnly:
+	case installExecutionModeExtractOnly, installExecutionModeInstall:
+		if extractor == nil {
+			return fmt.Errorf("archive extractor is not configured")
+		}
+		if mode == installExecutionModeInstall && relocator == nil {
+			return fmt.Errorf("Android Qt relocator is not configured")
+		}
+	default:
+		return fmt.Errorf("unsupported installation execution mode %d", mode)
+	}
+
 	if _, err := fmt.Fprintf(output, "Cache: %s\n", cacheDir); err != nil {
 		return fmt.Errorf("write archive cache path: %w", err)
 	}
@@ -379,7 +451,7 @@ func materializeInstallPlan(
 			}
 		}
 	}
-	if mode != installExecutionModeExtractOnly {
+	if mode == installExecutionModeDownloadOnly {
 		return nil
 	}
 	for _, item := range cached {
@@ -395,8 +467,22 @@ func materializeInstallPlan(
 			return fmt.Errorf("write extracted archive path: %w", err)
 		}
 	}
-	if _, err := fmt.Fprintln(output, "Path relocation has not been applied."); err != nil {
-		return fmt.Errorf("write extraction status: %w", err)
+	if mode == installExecutionModeExtractOnly {
+		if _, err := fmt.Fprintln(output, "Path relocation has not been applied."); err != nil {
+			return fmt.Errorf("write extraction status: %w", err)
+		}
+		return nil
+	}
+	for _, kit := range plan.AndroidKits {
+		if err := relocator.Relocate(ctx, kit.Destination); err != nil {
+			return fmt.Errorf("relocate Android Qt kit %s: %w", kit.ABI, err)
+		}
+		if _, err := fmt.Fprintf(output, "Relocated %s kit: %s\n", kit.ABI, kit.Destination); err != nil {
+			return fmt.Errorf("write relocated Android Qt kit path: %w", err)
+		}
+	}
+	if _, err := fmt.Fprintf(output, "Installed Qt %s for Android.\n", plan.Version); err != nil {
+		return fmt.Errorf("write installation status: %w", err)
 	}
 	return nil
 }

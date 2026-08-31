@@ -38,13 +38,33 @@ host and target. Android, WebAssembly, and shared Qt content are routed through
 Qt's platform-independent `all_os` repository without changing the user-visible
 host.
 
+Install an Android Qt kit using an existing desktop Qt installation of the same
+version:
+
+```console
+$ yaqt install-qt 6.8.0 \
+    --target android \
+    --abi arm64-v8a \
+    --root /opt/Qt
+```
+
+The root is the directory that contains versioned Qt installations, so it must
+not include `6.8.0` itself. Before downloading, yaqt searches `/opt/Qt/6.8.0`
+for exactly one desktop Qt installation for the current host. That installation
+must contain `bin/qmake6` and `bin/qtpaths6` (with `.exe` suffixes on Windows).
+yaqt does not download this host dependency yet, and reports an error if no
+matching desktop Qt or multiple candidates are present. A complete installation
+downloads and verifies every selected archive, extracts the Android kit to
+`/opt/Qt/6.8.0/android_arm64_v8a`, and relocates its Qt tool wrappers and
+configuration files to the discovered desktop Qt.
+
 Plan an Android installation without downloading or changing any files:
 
 ```console
 $ yaqt install-qt 6.8.0 \
     --target android \
     --abi arm64-v8a \
-    --output-dir /opt/Qt \
+    --root /opt/Qt \
     --dry-run
 ```
 
@@ -56,6 +76,7 @@ flag:
 $ yaqt install-qt 6.8.0 \
     --target android \
     --abi arm64-v8a \
+    --root /opt/Qt \
     --module qtmultimedia \
     --dry-run
 ```
@@ -70,6 +91,7 @@ Download and verify the selected archives without extracting them:
 $ yaqt install-qt 6.8.0 \
     --target android \
     --abi arm64-v8a \
+    --root /opt/Qt \
     --download-only
 ```
 
@@ -77,21 +99,21 @@ Verified archives are stored in a content-addressed cache. Use `--cache-dir` to
 select its root, or set `YAQT_CACHE_DIR`. Otherwise, yaqt uses the operating
 system's user cache directory.
 
-An explicit extraction-only mode is available while the Android installation
-workflow is under development:
+Stop after extraction when inspecting or diagnosing the unrelocated archive
+contents:
 
 ```console
 $ yaqt install-qt 6.8.0 \
     --target android \
     --abi arm64-v8a \
-    --output-dir /opt/Qt \
+    --root /opt/Qt \
     --extract-only
 ```
 
 The extractor accepts regular files and directories, rejects unsafe archive
 paths and special files, and preserves safe permission and executable bits.
-This mode stops before Android path relocation, so its output is not yet a
-complete Qt installation.
+This mode deliberately stops before Android path relocation, so its output is
+not a complete Qt installation.
 
 ## Relationship to Qt
 

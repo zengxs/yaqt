@@ -21,6 +21,7 @@ type stubArchiveFetcher struct {
 	destination string
 	archives    []qtrepo.Archive
 	failOn      string
+	events      *[]string
 }
 
 type archiveExtraction struct {
@@ -30,10 +31,19 @@ type archiveExtraction struct {
 
 type stubArchiveExtractor struct {
 	extractions []archiveExtraction
+	events      *[]string
+}
+
+type stubAndroidRelocator struct {
+	kitDirs []string
+	events  *[]string
 }
 
 func (stub *stubArchiveFetcher) Fetch(_ context.Context, archive qtrepo.Archive) (string, error) {
 	stub.archives = append(stub.archives, archive)
+	if stub.events != nil {
+		*stub.events = append(*stub.events, "fetch "+archive.Name)
+	}
 	if archive.Name == stub.failOn {
 		return "", errors.New("download failed")
 	}
@@ -45,6 +55,17 @@ func (stub *stubArchiveExtractor) Extract(_ context.Context, archivePath, destin
 		archivePath: archivePath,
 		destination: destination,
 	})
+	if stub.events != nil {
+		*stub.events = append(*stub.events, "extract "+filepath.Base(archivePath))
+	}
+	return nil
+}
+
+func (stub *stubAndroidRelocator) Relocate(_ context.Context, kitDir string) error {
+	stub.kitDirs = append(stub.kitDirs, kitDir)
+	if stub.events != nil {
+		*stub.events = append(*stub.events, "relocate "+filepath.Base(kitDir))
+	}
 	return nil
 }
 
@@ -69,7 +90,7 @@ func TestListQtCommand(t *testing.T) {
 			{Major: 6, Minor: 8, Patch: 1},
 		},
 	}
-	command := newCommand(lister, lister, nil, nil, qtrepo.HostLinux, output, &bytes.Buffer{})
+	command := newCommand(lister, installCommandDependencies{}, qtrepo.HostLinux, output, &bytes.Buffer{})
 
 	err := command.Run(context.Background(), []string{
 		"yaqt",
@@ -91,7 +112,7 @@ func TestListQtCommand(t *testing.T) {
 
 func TestListQtCommandRejectsInvalidHostTargetPair(t *testing.T) {
 	client := &stubRepositoryClient{}
-	command := newCommand(client, client, nil, nil, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
+	command := newCommand(client, installCommandDependencies{}, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
 	err := command.Run(context.Background(), []string{
 		"yaqt",
 		"list-qt",
@@ -152,7 +173,13 @@ func TestInstallQtDryRun(t *testing.T) {
 			},
 		},
 	}
-	command := newCommand(client, client, nil, nil, qtrepo.HostLinux, output, &bytes.Buffer{})
+	command := newCommand(
+		client,
+		installCommandDependencies{resolver: client},
+		qtrepo.HostLinux,
+		output,
+		&bytes.Buffer{},
+	)
 
 	err := command.Run(context.Background(), []string{
 		"yaqt",
@@ -161,7 +188,7 @@ func TestInstallQtDryRun(t *testing.T) {
 		"--target", "android",
 		"--abi", "arm64-v8a",
 		"--module", "qtmultimedia",
-		"--output-dir", "/opt/Qt",
+		"--root", "/opt/Qt",
 		"--base-url", "https://mirror.example/qt",
 		"--dry-run",
 	})
@@ -232,7 +259,16 @@ func TestInstallQtDownloadOnlyUsesExplicitCacheDirectory(t *testing.T) {
 		factoryCacheDir = resolvedCacheDir
 		return fetcher, nil
 	})
-	command := newCommand(client, client, factory, nil, qtrepo.HostLinux, output, &bytes.Buffer{})
+	command := newCommand(
+		client,
+		installCommandDependencies{
+			resolver:       client,
+			fetcherFactory: factory,
+		},
+		qtrepo.HostLinux,
+		output,
+		&bytes.Buffer{},
+	)
 
 	err := command.Run(context.Background(), []string{
 		"yaqt",
@@ -240,6 +276,7 @@ func TestInstallQtDownloadOnlyUsesExplicitCacheDirectory(t *testing.T) {
 		"6.8.0",
 		"--target", "android",
 		"--abi", "arm64-v8a",
+		"--root", filepath.Join(".tmp", "Qt"),
 		"--download-only",
 		"--cache-dir", cacheDir,
 	})
@@ -289,7 +326,17 @@ func TestInstallQtExtractOnlyDownloadsAndExtractsArchives(t *testing.T) {
 		return fetcher, nil
 	})
 	extractor := &stubArchiveExtractor{}
-	command := newCommand(client, client, factory, extractor, qtrepo.HostLinux, output, &bytes.Buffer{})
+	command := newCommand(
+		client,
+		installCommandDependencies{
+			resolver:       client,
+			fetcherFactory: factory,
+			extractor:      extractor,
+		},
+		qtrepo.HostLinux,
+		output,
+		&bytes.Buffer{},
+	)
 
 	err := command.Run(context.Background(), []string{
 		"yaqt",
@@ -297,6 +344,7 @@ func TestInstallQtExtractOnlyDownloadsAndExtractsArchives(t *testing.T) {
 		"6.8.0",
 		"--target", "android",
 		"--abi", "arm64-v8a",
+		"--root", filepath.Join(".tmp", "Qt"),
 		"--extract-only",
 		"--cache-dir", cacheDir,
 	})
@@ -338,9 +386,11 @@ func TestInstallQtExtractOnlyDownloadsEveryArchiveBeforeExtraction(t *testing.T)
 	extractor := &stubArchiveExtractor{}
 	command := newCommand(
 		client,
-		client,
-		factory,
-		extractor,
+		installCommandDependencies{
+			resolver:       client,
+			fetcherFactory: factory,
+			extractor:      extractor,
+		},
 		qtrepo.HostLinux,
 		&bytes.Buffer{},
 		&bytes.Buffer{},
@@ -352,6 +402,7 @@ func TestInstallQtExtractOnlyDownloadsEveryArchiveBeforeExtraction(t *testing.T)
 		"6.8.0",
 		"--target", "android",
 		"--abi", "arm64-v8a",
+		"--root", filepath.Join(".tmp", "Qt"),
 		"--extract-only",
 	})
 	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("download failed")) {
@@ -362,9 +413,124 @@ func TestInstallQtExtractOnlyDownloadsEveryArchiveBeforeExtraction(t *testing.T)
 	}
 }
 
-func TestInstallQtRequiresExecutionMode(t *testing.T) {
+func TestInstallQtCompleteDownloadsExtractsAndRelocates(t *testing.T) {
+	events := make([]string, 0)
+	output := &bytes.Buffer{}
+	qtRoot, err := filepath.Abs(filepath.Join(".tmp", "Qt"))
+	if err != nil {
+		t.Fatalf("filepath.Abs() error = %v", err)
+	}
+	kitDir := filepath.Join(qtRoot, "6.8.0", "android_arm64_v8a")
+	archive := qtrepo.Archive{
+		Name:      "qtbase",
+		ExtractTo: kitDir,
+	}
+	client := &stubRepositoryClient{
+		installPlan: qtrepo.InstallPlan{
+			Version: qtrepo.Version{Major: 6, Minor: 8},
+			Target:  qtrepo.TargetAndroid,
+			HostQt: qtrepo.HostQtRequirement{
+				Host:    qtrepo.HostLinux,
+				Version: qtrepo.Version{Major: 6, Minor: 8},
+			},
+			AndroidKits: []qtrepo.AndroidKit{
+				{
+					ABI:         qtrepo.AndroidABIArm64V8A,
+					Destination: kitDir,
+					Packages: []qtrepo.PackageSelection{
+						{Archives: []qtrepo.Archive{archive}},
+					},
+				},
+			},
+		},
+	}
+	cacheDir := filepath.Join(".tmp", "cache")
+	fetcher := &stubArchiveFetcher{
+		destination: filepath.Join(cacheDir, "downloads"),
+		events:      &events,
+	}
+	factory := archiveFetcherFactory(func(string) (archiveFetcher, error) {
+		return fetcher, nil
+	})
+	extractor := &stubArchiveExtractor{events: &events}
+	relocator := &stubAndroidRelocator{events: &events}
+	var configuredRequirement qtrepo.HostQtRequirement
+	var configuredRoot string
+	relocatorFactory := androidRelocatorFactory(func(
+		requirement qtrepo.HostQtRequirement,
+		root string,
+	) (androidRelocator, error) {
+		configuredRequirement = requirement
+		configuredRoot = root
+		return relocator, nil
+	})
+	command := newCommand(
+		client,
+		installCommandDependencies{
+			resolver:         client,
+			fetcherFactory:   factory,
+			extractor:        extractor,
+			relocatorFactory: relocatorFactory,
+		},
+		qtrepo.HostLinux,
+		output,
+		&bytes.Buffer{},
+	)
+
+	err = command.Run(context.Background(), []string{
+		"yaqt",
+		"install-qt",
+		"6.8.0",
+		"--target", "android",
+		"--abi", "arm64-v8a",
+		"--root", qtRoot,
+		"--cache-dir", cacheDir,
+	})
+	if err != nil {
+		t.Fatalf("command.Run() error = %v", err)
+	}
+	if configuredRequirement != client.installPlan.HostQt || configuredRoot != qtRoot {
+		t.Errorf(
+			"relocation configuration = requirement %+v, root %q; want requirement %+v, root %q",
+			configuredRequirement,
+			configuredRoot,
+			client.installPlan.HostQt,
+			qtRoot,
+		)
+	}
+	if got, want := relocator.kitDirs, []string{kitDir}; len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("relocated kit directories = %v, want %v", got, want)
+	}
+	wantEvents := []string{"fetch qtbase", "extract qtbase.7z", "relocate android_arm64_v8a"}
+	if len(events) != len(wantEvents) {
+		t.Fatalf("installation events = %v, want %v", events, wantEvents)
+	}
+	for index, want := range wantEvents {
+		if events[index] != want {
+			t.Errorf("installation event %d = %q, want %q", index, events[index], want)
+		}
+	}
+	for _, want := range []string{
+		"Cached qtbase:",
+		"Extracted qtbase to " + kitDir,
+		"Relocated arm64-v8a kit: " + kitDir,
+		"Installed Qt 6.8.0 for Android.",
+	} {
+		if !bytes.Contains(output.Bytes(), []byte(want)) {
+			t.Errorf("output does not contain %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestInstallQtRequiresRoot(t *testing.T) {
 	client := &stubRepositoryClient{}
-	command := newCommand(client, client, nil, nil, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
+	command := newCommand(
+		client,
+		installCommandDependencies{resolver: client},
+		qtrepo.HostLinux,
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	)
 	err := command.Run(context.Background(), []string{
 		"yaqt",
 		"install-qt",
@@ -372,8 +538,84 @@ func TestInstallQtRequiresExecutionMode(t *testing.T) {
 		"--target", "android",
 		"--abi", "arm64-v8a",
 	})
-	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("--dry-run, --download-only, or --extract-only")) {
-		t.Fatalf("command.Run() error = %v, want an execution mode requirement", err)
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("root")) {
+		t.Fatalf("command.Run() error = %v, want a Qt installation root requirement", err)
+	}
+}
+
+func TestInstallQtRejectsVersionDirectoryAsRoot(t *testing.T) {
+	client := &stubRepositoryClient{}
+	command := newCommand(
+		client,
+		installCommandDependencies{resolver: client},
+		qtrepo.HostLinux,
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	)
+	err := command.Run(context.Background(), []string{
+		"yaqt",
+		"install-qt",
+		"6.8.0",
+		"--target", "android",
+		"--abi", "arm64-v8a",
+		"--root", filepath.Join(".tmp", "Qt", "6.8.0"),
+		"--dry-run",
+	})
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("includes version 6.8.0")) {
+		t.Fatalf("command.Run() error = %v, want a version directory root error", err)
+	}
+}
+
+func TestInstallQtRejectsRemovedHostQtDirectoryFlag(t *testing.T) {
+	client := &stubRepositoryClient{}
+	command := newCommand(
+		client,
+		installCommandDependencies{resolver: client},
+		qtrepo.HostLinux,
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	)
+	err := command.Run(context.Background(), []string{
+		"yaqt",
+		"install-qt",
+		"6.8.0",
+		"--target", "android",
+		"--abi", "arm64-v8a",
+		"--root", filepath.Join(".tmp", "Qt"),
+		"--host-qt-dir", filepath.Join(".tmp", "Qt", "6.8.0", "linux_gcc_64"),
+		"--dry-run",
+	})
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("host-qt-dir")) {
+		t.Fatalf("command.Run() error = %v, want an unknown host Qt directory flag error", err)
+	}
+}
+
+func TestInstallQtCompleteRejectsCrossHostInstallation(t *testing.T) {
+	client := &stubRepositoryClient{}
+	relocatorFactory := androidRelocatorFactory(func(qtrepo.HostQtRequirement, string) (androidRelocator, error) {
+		return &stubAndroidRelocator{}, nil
+	})
+	command := newCommand(
+		client,
+		installCommandDependencies{
+			resolver:         client,
+			relocatorFactory: relocatorFactory,
+		},
+		qtrepo.HostLinux,
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	)
+	err := command.Run(context.Background(), []string{
+		"yaqt",
+		"install-qt",
+		"6.8.0",
+		"--host", "windows",
+		"--target", "android",
+		"--abi", "arm64-v8a",
+		"--root", filepath.Join(".tmp", "Qt"),
+	})
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("does not match the current host")) {
+		t.Fatalf("command.Run() error = %v, want a cross-host installation error", err)
 	}
 }
 
@@ -385,13 +627,20 @@ func TestInstallQtRejectsConflictingExecutionModes(t *testing.T) {
 	} {
 		t.Run(modes[0]+"_and_"+modes[1], func(t *testing.T) {
 			client := &stubRepositoryClient{}
-			command := newCommand(client, client, nil, nil, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
+			command := newCommand(
+				client,
+				installCommandDependencies{resolver: client},
+				qtrepo.HostLinux,
+				&bytes.Buffer{},
+				&bytes.Buffer{},
+			)
 			arguments := []string{
 				"yaqt",
 				"install-qt",
 				"6.8.0",
 				"--target", "android",
 				"--abi", "arm64-v8a",
+				"--root", filepath.Join(".tmp", "Qt"),
 			}
 			arguments = append(arguments, modes...)
 			err := command.Run(context.Background(), arguments)
