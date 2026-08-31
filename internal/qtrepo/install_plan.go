@@ -2,7 +2,6 @@ package qtrepo
 
 import (
 	"context"
-	"encoding/xml"
 	"fmt"
 	"net/url"
 	"path"
@@ -80,51 +79,17 @@ type Archive struct {
 	ExtractTo string
 }
 
-type updatesDocument struct {
-	Packages []packageUpdate `xml:"PackageUpdate"`
-}
-
-type packageUpdate struct {
-	Name                 string            `xml:"Name"`
-	Version              string            `xml:"Version"`
-	DownloadableArchives string            `xml:"DownloadableArchives"`
-	Operations           []updateOperation `xml:"Operations>Operation"`
-}
-
-type updateOperation struct {
-	Name      string   `xml:"name,attr"`
-	Arguments []string `xml:"Argument"`
-}
-
 type selectedPackage struct {
 	update packageUpdate
 	module string
 }
 
-var (
-	legacyArchiveLayoutVersion         = Version{Major: 6, Minor: 8}
-	splitWindowsDesktopMetadataVersion = Version{Major: 6, Minor: 11}
-	installTargetPlanners              = map[Target]installTargetPlanner{
-		TargetDesktop: (*Client).resolveDesktopInstall,
-		TargetAndroid: (*Client).resolveAndroidInstall,
-	}
-)
-
-type installTargetPlanner func(
-	*Client,
-	context.Context,
-	InstallRequest,
-	[]string,
-	string,
-) (InstallPlan, error)
+var legacyArchiveLayoutVersion = Version{Major: 6, Minor: 8}
 
 // ResolveInstall converts repository metadata into a deterministic installation plan.
 func (c *Client) ResolveInstall(ctx context.Context, request InstallRequest) (InstallPlan, error) {
-	if request.Version.compare(minimumSupportedVersion) < 0 {
-		return InstallPlan{}, fmt.Errorf("minimum supported version is %s", minimumSupportedVersion)
-	}
-	if request.Version.Major <= 0 || request.Version.Minor < 0 || request.Version.Patch < 0 {
-		return InstallPlan{}, fmt.Errorf("invalid Qt version %s", request.Version)
+	if err := validateSupportedVersion(request.Version); err != nil {
+		return InstallPlan{}, err
 	}
 	if strings.TrimSpace(request.Destination) == "" {
 		return InstallPlan{}, fmt.Errorf("installation destination must not be empty")
@@ -135,11 +100,11 @@ func (c *Client) ResolveInstall(ctx context.Context, request InstallRequest) (In
 		return InstallPlan{}, err
 	}
 	destination := filepath.Clean(request.Destination)
-	planner, ok := installTargetPlanners[request.Repository.Target]
+	operations, ok := packageTargets[request.Repository.Target]
 	if !ok {
 		return InstallPlan{}, fmt.Errorf("installation planning supports only the desktop and Android targets")
 	}
-	return planner(c, ctx, request, modules, destination)
+	return operations.planInstall(c, ctx, request, modules, destination)
 }
 
 func (c *Client) resolveDesktopInstall(
@@ -225,33 +190,26 @@ func (c *Client) resolveDesktopKit(
 	modules []string,
 	destination string,
 ) (DesktopKit, error) {
-	descriptor, err := architecture.descriptor()
+	metadata, descriptor, err := desktopPackageVariantMetadata(repository, version, architecture)
 	if err != nil {
 		return DesktopKit{}, err
 	}
-	metadataURL, err := desktopMetadataURL(repository, version, architecture, descriptor)
-	if err != nil {
-		return DesktopKit{}, err
-	}
-	packages, err := c.fetchPackageUpdates(ctx, metadataURL)
+	packages, err := c.fetchPackageUpdates(ctx, metadata.url)
 	if err != nil {
 		return DesktopKit{}, err
 	}
 
-	packagePrefix := fmt.Sprintf("qt.qt%d.%s.", version.Major, version.compact())
 	selected, err := selectPackageUpdates(
 		packages,
-		packagePrefix,
-		string(architecture),
+		metadata,
 		modules,
-		"desktop architecture "+string(architecture),
 		version,
 	)
 	if err != nil {
 		return DesktopKit{}, err
 	}
 	packageSelections, err := resolvePackageSelections(
-		metadataURL,
+		metadata,
 		destination,
 		version,
 		selected,
@@ -279,107 +237,86 @@ func (c *Client) resolveAndroidKit(
 	modules []string,
 	destination string,
 ) (AndroidKit, error) {
-	metadataURL, err := androidMetadataURL(repository, version, abi)
+	metadata, err := androidPackageVariantMetadata(repository, version, abi)
 	if err != nil {
 		return AndroidKit{}, err
 	}
-	packages, err := c.fetchPackageUpdates(ctx, metadataURL)
+	packages, err := c.fetchPackageUpdates(ctx, metadata.url)
 	if err != nil {
 		return AndroidKit{}, err
 	}
 
-	packagePrefix := fmt.Sprintf("qt.qt%d.%s.", version.Major, version.compact())
-	packageArchitecture := abi.packageArchitecture()
 	selected, err := selectPackageUpdates(
 		packages,
-		packagePrefix,
-		packageArchitecture,
+		metadata,
 		modules,
-		"Android ABI "+string(abi),
 		version,
 	)
 	if err != nil {
 		return AndroidKit{}, err
 	}
-	packageSelections, err := resolvePackageSelections(metadataURL, destination, version, selected)
+	packageSelections, err := resolvePackageSelections(metadata, destination, version, selected)
 	if err != nil {
 		return AndroidKit{}, err
 	}
 
 	return AndroidKit{
 		ABI:         abi,
-		Destination: filepath.Join(destination, version.String(), packageArchitecture),
+		Destination: filepath.Join(destination, version.String(), metadata.packageArchitecture),
 		Packages:    packageSelections,
 	}, nil
 }
 
-func (c *Client) fetchPackageUpdates(
-	ctx context.Context,
-	metadataURL string,
-) (map[string]packageUpdate, error) {
-	metadata, err := c.fetchResource(ctx, metadataURL, packageMetadataResource)
-	if err != nil {
-		return nil, err
-	}
-
-	var updates updatesDocument
-	if err := xml.Unmarshal(metadata, &updates); err != nil {
-		return nil, fmt.Errorf("parse Qt package metadata %s: %w", metadataURL, err)
-	}
-	packages := make(map[string]packageUpdate, len(updates.Packages))
-	for _, update := range updates.Packages {
-		packages[strings.TrimSpace(update.Name)] = update
-	}
-	return packages, nil
-}
-
 func selectPackageUpdates(
 	packages map[string]packageUpdate,
-	packagePrefix,
-	packageArchitecture string,
+	metadata packageVariantMetadata,
 	modules []string,
-	variant string,
 	version Version,
 ) ([]selectedPackage, error) {
-	baseName := packagePrefix + packageArchitecture
 	selected := make([]selectedPackage, 0, len(modules)+1)
-	basePackage, ok := packages[baseName]
+	basePackage, ok := packages[metadata.basePackageName()]
 	if !ok {
-		return nil, fmt.Errorf("Qt %s metadata contains no base package for %s", version, variant)
+		return nil, fmt.Errorf("Qt %s metadata contains no base package for %s", version, metadata.description)
 	}
 	selected = append(selected, selectedPackage{update: basePackage})
 
 	for _, module := range modules {
-		candidates := []string{
-			packagePrefix + "addons." + module + "." + packageArchitecture,
-			packagePrefix + module + "." + packageArchitecture,
-		}
-		var modulePackage packageUpdate
-		found := false
-		for _, candidate := range candidates {
-			if update, ok := packages[candidate]; ok {
-				modulePackage = update
-				found = true
-				break
-			}
-		}
+		modulePackage, found := selectModulePackageUpdate(packages, metadata, module)
 		if !found {
-			return nil, fmt.Errorf("Qt %s module %q is not available for %s", version, module, variant)
+			return nil, fmt.Errorf(
+				"Qt %s module %q is not available for %s",
+				version,
+				module,
+				metadata.description,
+			)
 		}
 		selected = append(selected, selectedPackage{update: modulePackage, module: module})
 	}
 	return selected, nil
 }
 
+func selectModulePackageUpdate(
+	packages map[string]packageUpdate,
+	metadata packageVariantMetadata,
+	module string,
+) (packageUpdate, bool) {
+	for _, candidate := range metadata.modulePackageNames(module) {
+		if update, ok := packages[candidate]; ok {
+			return update, true
+		}
+	}
+	return packageUpdate{}, false
+}
+
 func resolvePackageSelections(
-	metadataURL,
+	metadata packageVariantMetadata,
 	destination string,
 	version Version,
 	selected []selectedPackage,
 ) ([]PackageSelection, error) {
 	packageSelections := make([]PackageSelection, 0, len(selected))
 	for _, selection := range selected {
-		resolved, err := resolvePackageArchives(metadataURL, destination, version, selection.update)
+		resolved, err := resolvePackageArchives(metadata.url, destination, version, selection.update)
 		if err != nil {
 			return nil, fmt.Errorf("resolve package %q: %w", selection.update.Name, err)
 		}
@@ -393,39 +330,6 @@ func resolvePackageSelections(
 		})
 	}
 	return packageSelections, nil
-}
-
-func androidMetadataURL(repository Repository, version Version, abi AndroidABI) (string, error) {
-	versionDirectory := fmt.Sprintf("qt%d_%s", version.Major, version.compact())
-	abiDirectory := versionDirectory + "_" + abi.repositoryName()
-	return url.JoinPath(repository.IndexURL(), versionDirectory, abiDirectory, "Updates.xml")
-}
-
-func desktopMetadataURL(
-	repository Repository,
-	version Version,
-	architecture DesktopArchitecture,
-	descriptor desktopArchitectureDescriptor,
-) (string, error) {
-	versionDirectory := fmt.Sprintf("qt%d_%s", version.Major, version.compact())
-	metadataDirectory := versionDirectory
-	if repository.Host == HostWindows &&
-		version.compare(splitWindowsDesktopMetadataVersion) >= 0 {
-		if descriptor.repositorySuffix == "" {
-			return "", fmt.Errorf(
-				"desktop Qt architecture %q has no repository directory for Qt %s",
-				architecture,
-				version,
-			)
-		}
-		metadataDirectory += "_" + descriptor.repositorySuffix
-	}
-	return url.JoinPath(
-		repository.IndexURL(),
-		versionDirectory,
-		metadataDirectory,
-		"Updates.xml",
-	)
 }
 
 func resolvePackageArchives(

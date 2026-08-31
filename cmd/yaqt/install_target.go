@@ -9,6 +9,14 @@ import (
 	"github.com/zengxs/yaqt/internal/qtrepo"
 )
 
+type moduleRequestBuilder interface {
+	moduleRequest(
+		command *cli.Command,
+		repository qtrepo.Repository,
+		version qtrepo.Version,
+	) (qtrepo.ModuleRequest, error)
+}
+
 type installTargetHandler interface {
 	installRequest(
 		command *cli.Command,
@@ -21,17 +29,68 @@ type installTargetHandler interface {
 	postInstallDescription() string
 }
 
-var installTargetHandlers = map[qtrepo.Target]installTargetHandler{
-	qtrepo.TargetDesktop: desktopInstallTargetHandler{},
-	qtrepo.TargetAndroid: androidInstallTargetHandler{},
+type targetHandlerSet struct {
+	module  moduleRequestBuilder
+	install installTargetHandler
+}
+
+var targetHandlers = map[qtrepo.Target]targetHandlerSet{
+	qtrepo.TargetDesktop: {
+		module:  desktopModuleRequestBuilder{},
+		install: desktopInstallTargetHandler{},
+	},
+	qtrepo.TargetAndroid: {
+		module:  androidModuleRequestBuilder{},
+		install: androidInstallTargetHandler{},
+	},
+}
+
+func moduleRequestBuilderFor(target qtrepo.Target) (moduleRequestBuilder, error) {
+	handlers, err := targetHandlersFor(target)
+	if err != nil {
+		return nil, err
+	}
+	return handlers.module, nil
 }
 
 func installTargetHandlerFor(target qtrepo.Target) (installTargetHandler, error) {
-	handler, ok := installTargetHandlers[target]
-	if !ok {
-		return nil, fmt.Errorf("install-qt supports only the desktop and Android targets")
+	handlers, err := targetHandlersFor(target)
+	if err != nil {
+		return nil, err
 	}
-	return handler, nil
+	return handlers.install, nil
+}
+
+func targetHandlersFor(target qtrepo.Target) (targetHandlerSet, error) {
+	handlers, ok := targetHandlers[target]
+	if !ok {
+		return targetHandlerSet{}, fmt.Errorf(
+			"unsupported Qt package target %q (choose desktop or android)",
+			target,
+		)
+	}
+	return handlers, nil
+}
+
+type desktopModuleRequestBuilder struct{}
+
+func (desktopModuleRequestBuilder) moduleRequest(
+	command *cli.Command,
+	repository qtrepo.Repository,
+	version qtrepo.Version,
+) (qtrepo.ModuleRequest, error) {
+	if command.String("abi") != "" {
+		return qtrepo.ModuleRequest{}, fmt.Errorf("--abi can be used only with --target android")
+	}
+	architecture, err := desktopArchitectureFromCommand(command, repository)
+	if err != nil {
+		return qtrepo.ModuleRequest{}, err
+	}
+	return qtrepo.ModuleRequest{
+		Repository:          repository,
+		Version:             version,
+		DesktopArchitecture: architecture,
+	}, nil
 }
 
 type desktopInstallTargetHandler struct{}
@@ -45,10 +104,7 @@ func (desktopInstallTargetHandler) installRequest(
 	if len(command.StringSlice("abi")) != 0 {
 		return qtrepo.InstallRequest{}, fmt.Errorf("--abi can be used only with --target android")
 	}
-	architecture, err := qtrepo.ResolveDesktopArchitecture(
-		repository.Host,
-		command.String("arch"),
-	)
+	architecture, err := desktopArchitectureFromCommand(command, repository)
 	if err != nil {
 		return qtrepo.InstallRequest{}, err
 	}
@@ -80,6 +136,31 @@ func (desktopInstallTargetHandler) postInstallDescription() string {
 	return "relocate desktop Qt paths"
 }
 
+type androidModuleRequestBuilder struct{}
+
+func (androidModuleRequestBuilder) moduleRequest(
+	command *cli.Command,
+	repository qtrepo.Repository,
+	version qtrepo.Version,
+) (qtrepo.ModuleRequest, error) {
+	if err := rejectDesktopArchitecture(command); err != nil {
+		return qtrepo.ModuleRequest{}, err
+	}
+	abiValue := command.String("abi")
+	if abiValue == "" {
+		return qtrepo.ModuleRequest{}, fmt.Errorf("--abi is required for the Android target")
+	}
+	abi, err := qtrepo.ParseAndroidABI(abiValue)
+	if err != nil {
+		return qtrepo.ModuleRequest{}, err
+	}
+	return qtrepo.ModuleRequest{
+		Repository: repository,
+		Version:    version,
+		AndroidABI: abi,
+	}, nil
+}
+
 type androidInstallTargetHandler struct{}
 
 func (androidInstallTargetHandler) installRequest(
@@ -88,8 +169,8 @@ func (androidInstallTargetHandler) installRequest(
 	version qtrepo.Version,
 	destination string,
 ) (qtrepo.InstallRequest, error) {
-	if command.String("arch") != "" {
-		return qtrepo.InstallRequest{}, fmt.Errorf("--arch can be used only with --target desktop")
+	if err := rejectDesktopArchitecture(command); err != nil {
+		return qtrepo.InstallRequest{}, err
 	}
 	abiValues := command.StringSlice("abi")
 	if len(abiValues) == 0 {
@@ -133,6 +214,20 @@ func (androidInstallTargetHandler) newRelocator(
 
 func (androidInstallTargetHandler) postInstallDescription() string {
 	return "relocate Android Qt paths and connect each kit to the matching host Qt"
+}
+
+func desktopArchitectureFromCommand(
+	command *cli.Command,
+	repository qtrepo.Repository,
+) (qtrepo.DesktopArchitecture, error) {
+	return qtrepo.ResolveDesktopArchitecture(repository.Host, command.String("arch"))
+}
+
+func rejectDesktopArchitecture(command *cli.Command) error {
+	if command.String("arch") != "" {
+		return fmt.Errorf("--arch can be used only with --target desktop")
+	}
+	return nil
 }
 
 func newInstallRequest(

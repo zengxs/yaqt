@@ -38,6 +38,29 @@ host and target. Android, WebAssembly, and shared Qt content are routed through
 Qt's platform-independent `all_os` repository without changing the user-visible
 host.
 
+List the additional modules available for the current host's native desktop
+package:
+
+```console
+$ yaqt list-modules 6.11.2
+qtcharts
+qtmultimedia
+...
+```
+
+Module availability depends on the package variant. Use `--arch` to select an
+explicit desktop architecture, or select one Android ABI:
+
+```console
+$ yaqt list-modules 6.11.2 \
+    --target android \
+    --abi arm64-v8a
+```
+
+The command reads the corresponding `Updates.xml` and prints additional
+installable module names in ascending order. Each printed name can be passed to
+the repeatable `install-qt --module` flag.
+
 Install the native desktop Qt for the current host:
 
 ```console

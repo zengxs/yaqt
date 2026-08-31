@@ -13,6 +13,8 @@ import (
 type stubRepositoryClient struct {
 	repository     qtrepo.Repository
 	versions       []qtrepo.Version
+	modules        []string
+	moduleRequest  qtrepo.ModuleRequest
 	installRequest qtrepo.InstallRequest
 	installPlan    qtrepo.InstallPlan
 }
@@ -74,6 +76,14 @@ func (stub *stubRepositoryClient) ListVersions(_ context.Context, repository qtr
 	return stub.versions, nil
 }
 
+func (stub *stubRepositoryClient) ListModules(
+	_ context.Context,
+	request qtrepo.ModuleRequest,
+) ([]string, error) {
+	stub.moduleRequest = request
+	return stub.modules, nil
+}
+
 func (stub *stubRepositoryClient) ResolveInstall(
 	_ context.Context,
 	request qtrepo.InstallRequest,
@@ -90,7 +100,12 @@ func TestListQtCommand(t *testing.T) {
 			{Major: 6, Minor: 8, Patch: 1},
 		},
 	}
-	command := newCommand(lister, installCommandDependencies{}, qtrepo.HostLinux, output, &bytes.Buffer{})
+	command := newCommand(
+		commandDependencies{versionLister: lister},
+		qtrepo.HostLinux,
+		output,
+		&bytes.Buffer{},
+	)
 
 	err := command.Run(context.Background(), []string{
 		"yaqt",
@@ -112,7 +127,12 @@ func TestListQtCommand(t *testing.T) {
 
 func TestListQtCommandRejectsInvalidHostTargetPair(t *testing.T) {
 	client := &stubRepositoryClient{}
-	command := newCommand(client, installCommandDependencies{}, qtrepo.HostLinux, &bytes.Buffer{}, &bytes.Buffer{})
+	command := newCommand(
+		commandDependencies{versionLister: client},
+		qtrepo.HostLinux,
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	)
 	err := command.Run(context.Background(), []string{
 		"yaqt",
 		"list-qt",
@@ -175,8 +195,9 @@ func TestInstallQtDryRun(t *testing.T) {
 		},
 	}
 	command := newCommand(
-		client,
-		installCommandDependencies{resolver: client},
+		commandDependencies{
+			install: installCommandDependencies{resolver: client},
+		},
 		qtrepo.HostLinux,
 		output,
 		&bytes.Buffer{},
@@ -265,8 +286,9 @@ func TestInstallQtDesktopDryRunUsesNativeArchitecture(t *testing.T) {
 		},
 	}
 	command := newCommand(
-		client,
-		installCommandDependencies{resolver: client},
+		commandDependencies{
+			install: installCommandDependencies{resolver: client},
+		},
 		qtrepo.HostMac,
 		output,
 		&bytes.Buffer{},
@@ -333,8 +355,9 @@ func TestInstallQtRejectsTargetSpecificArchitectureFlags(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			client := &stubRepositoryClient{}
 			command := newCommand(
-				client,
-				installCommandDependencies{resolver: client},
+				commandDependencies{
+					install: installCommandDependencies{resolver: client},
+				},
 				qtrepo.HostLinux,
 				&bytes.Buffer{},
 				&bytes.Buffer{},
@@ -381,10 +404,11 @@ func TestInstallQtDownloadOnlyUsesExplicitCacheDirectory(t *testing.T) {
 		return fetcher, nil
 	})
 	command := newCommand(
-		client,
-		installCommandDependencies{
-			resolver:       client,
-			fetcherFactory: factory,
+		commandDependencies{
+			install: installCommandDependencies{
+				resolver:       client,
+				fetcherFactory: factory,
+			},
 		},
 		qtrepo.HostLinux,
 		output,
@@ -449,11 +473,12 @@ func TestInstallQtExtractOnlyDownloadsAndExtractsArchives(t *testing.T) {
 	})
 	extractor := &stubArchiveExtractor{}
 	command := newCommand(
-		client,
-		installCommandDependencies{
-			resolver:       client,
-			fetcherFactory: factory,
-			extractor:      extractor,
+		commandDependencies{
+			install: installCommandDependencies{
+				resolver:       client,
+				fetcherFactory: factory,
+				extractor:      extractor,
+			},
 		},
 		qtrepo.HostLinux,
 		output,
@@ -510,11 +535,12 @@ func TestInstallQtExtractOnlyDownloadsEveryArchiveBeforeExtraction(t *testing.T)
 	})
 	extractor := &stubArchiveExtractor{}
 	command := newCommand(
-		client,
-		installCommandDependencies{
-			resolver:       client,
-			fetcherFactory: factory,
-			extractor:      extractor,
+		commandDependencies{
+			install: installCommandDependencies{
+				resolver:       client,
+				fetcherFactory: factory,
+				extractor:      extractor,
+			},
 		},
 		qtrepo.HostLinux,
 		&bytes.Buffer{},
@@ -591,12 +617,13 @@ func TestInstallQtCompleteDownloadsExtractsAndRelocates(t *testing.T) {
 		return relocator, nil
 	})
 	command := newCommand(
-		client,
-		installCommandDependencies{
-			resolver:         client,
-			fetcherFactory:   factory,
-			extractor:        extractor,
-			relocatorFactory: relocatorFactory,
+		commandDependencies{
+			install: installCommandDependencies{
+				resolver:         client,
+				fetcherFactory:   factory,
+				extractor:        extractor,
+				relocatorFactory: relocatorFactory,
+			},
 		},
 		qtrepo.HostLinux,
 		output,
@@ -681,20 +708,21 @@ func TestInstallQtDesktopCompleteDownloadsExtractsAndRelocates(t *testing.T) {
 	relocator := &stubInstallRelocator{events: &events}
 	var configuredTarget qtrepo.Target
 	command := newCommand(
-		client,
-		installCommandDependencies{
-			resolver: client,
-			fetcherFactory: archiveFetcherFactory(func(string) (archiveFetcher, error) {
-				return fetcher, nil
-			}),
-			extractor: extractor,
-			relocatorFactory: installRelocatorFactory(func(
-				plan qtrepo.InstallPlan,
-				_ string,
-			) (installRelocator, error) {
-				configuredTarget = plan.Target
-				return relocator, nil
-			}),
+		commandDependencies{
+			install: installCommandDependencies{
+				resolver: client,
+				fetcherFactory: archiveFetcherFactory(func(string) (archiveFetcher, error) {
+					return fetcher, nil
+				}),
+				extractor: extractor,
+				relocatorFactory: installRelocatorFactory(func(
+					plan qtrepo.InstallPlan,
+					_ string,
+				) (installRelocator, error) {
+					configuredTarget = plan.Target
+					return relocator, nil
+				}),
+			},
 		},
 		qtrepo.HostMac,
 		output,
@@ -741,8 +769,9 @@ func TestInstallQtDesktopCompleteDownloadsExtractsAndRelocates(t *testing.T) {
 func TestInstallQtRequiresRoot(t *testing.T) {
 	client := &stubRepositoryClient{}
 	command := newCommand(
-		client,
-		installCommandDependencies{resolver: client},
+		commandDependencies{
+			install: installCommandDependencies{resolver: client},
+		},
 		qtrepo.HostLinux,
 		&bytes.Buffer{},
 		&bytes.Buffer{},
@@ -762,8 +791,9 @@ func TestInstallQtRequiresRoot(t *testing.T) {
 func TestInstallQtRejectsVersionDirectoryAsRoot(t *testing.T) {
 	client := &stubRepositoryClient{}
 	command := newCommand(
-		client,
-		installCommandDependencies{resolver: client},
+		commandDependencies{
+			install: installCommandDependencies{resolver: client},
+		},
 		qtrepo.HostLinux,
 		&bytes.Buffer{},
 		&bytes.Buffer{},
@@ -785,8 +815,9 @@ func TestInstallQtRejectsVersionDirectoryAsRoot(t *testing.T) {
 func TestInstallQtRejectsRemovedHostQtDirectoryFlag(t *testing.T) {
 	client := &stubRepositoryClient{}
 	command := newCommand(
-		client,
-		installCommandDependencies{resolver: client},
+		commandDependencies{
+			install: installCommandDependencies{resolver: client},
+		},
 		qtrepo.HostLinux,
 		&bytes.Buffer{},
 		&bytes.Buffer{},
@@ -812,10 +843,11 @@ func TestInstallQtCompleteRejectsCrossHostInstallation(t *testing.T) {
 		return &stubInstallRelocator{}, nil
 	})
 	command := newCommand(
-		client,
-		installCommandDependencies{
-			resolver:         client,
-			relocatorFactory: relocatorFactory,
+		commandDependencies{
+			install: installCommandDependencies{
+				resolver:         client,
+				relocatorFactory: relocatorFactory,
+			},
 		},
 		qtrepo.HostLinux,
 		&bytes.Buffer{},
@@ -844,8 +876,9 @@ func TestInstallQtRejectsConflictingExecutionModes(t *testing.T) {
 		t.Run(modes[0]+"_and_"+modes[1], func(t *testing.T) {
 			client := &stubRepositoryClient{}
 			command := newCommand(
-				client,
-				installCommandDependencies{resolver: client},
+				commandDependencies{
+					install: installCommandDependencies{resolver: client},
+				},
 				qtrepo.HostLinux,
 				&bytes.Buffer{},
 				&bytes.Buffer{},

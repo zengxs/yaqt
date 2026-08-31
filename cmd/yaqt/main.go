@@ -32,8 +32,11 @@ func main() {
 		relocatorFactory: defaultInstallRelocatorFactory,
 	}
 	command := newCommand(
-		client,
-		installDependencies,
+		commandDependencies{
+			versionLister: client,
+			moduleLister:  client,
+			install:       installDependencies,
+		},
 		defaultHost,
 		os.Stdout,
 		os.Stderr,
@@ -75,6 +78,12 @@ type installCommandDependencies struct {
 	relocatorFactory installRelocatorFactory
 }
 
+type commandDependencies struct {
+	versionLister versionLister
+	moduleLister  moduleLister
+	install       installCommandDependencies
+}
+
 type installExecutionMode uint8
 
 const (
@@ -85,8 +94,7 @@ const (
 )
 
 func newCommand(
-	lister versionLister,
-	installDependencies installCommandDependencies,
+	dependencies commandDependencies,
 	defaultHost qtrepo.Host,
 	output,
 	errorOutput io.Writer,
@@ -99,9 +107,10 @@ func newCommand(
 		ErrWriter: errorOutput,
 		Suggest:   true,
 		Commands: []*cli.Command{
-			newListQtCommand(lister, defaultHost, output),
+			newListQtCommand(dependencies.versionLister, defaultHost, output),
+			newListModulesCommand(dependencies.moduleLister, defaultHost, output),
 			newInstallQtCommand(
-				installDependencies,
+				dependencies.install,
 				defaultHost,
 				output,
 			),

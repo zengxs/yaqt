@@ -61,6 +61,16 @@ type repositoryEntry struct {
 
 var minimumSupportedVersion = Version{Major: 6, Minor: 8}
 
+func validateSupportedVersion(version Version) error {
+	if version.compare(minimumSupportedVersion) < 0 {
+		return fmt.Errorf("minimum supported version is %s", minimumSupportedVersion)
+	}
+	if version.Major <= 0 || version.Minor < 0 || version.Patch < 0 {
+		return fmt.Errorf("invalid Qt version %s", version)
+	}
+	return nil
+}
+
 func parseRepositoryEntry(name string) (repositoryEntry, bool) {
 	family, payload, ok := strings.Cut(name, "_")
 	if !ok || !strings.HasPrefix(family, "qt") {
