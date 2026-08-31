@@ -35,7 +35,7 @@ func TestAndroidRelocatorRewritesQtHostPaths(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			qtRoot, hostQtDir, kitDir := createAndroidRelocationTree(t, test.host)
-			relocator, err := NewAndroidRelocator(testHostQtRequirement(test.host), qtRoot)
+			relocator, err := NewAndroidRelocator(testQtInstallationIdentity(test.host), qtRoot)
 			if err != nil {
 				t.Fatalf("NewAndroidRelocator() error = %v", err)
 			}
@@ -116,7 +116,7 @@ func TestAndroidRelocatorPreflightsEveryFileBeforeWriting(t *testing.T) {
 	writeRelocationFile(t, qdevicePath, "DEFAULT_ANDROID_ABIS = arm64-v8a\n", 0o644)
 	before := snapshotRelocationTree(t, kitDir)
 
-	relocator, err := NewAndroidRelocator(testHostQtRequirement(qtrepo.HostMac), qtRoot)
+	relocator, err := NewAndroidRelocator(testQtInstallationIdentity(qtrepo.HostMac), qtRoot)
 	if err != nil {
 		t.Fatalf("NewAndroidRelocator() error = %v", err)
 	}
@@ -148,7 +148,7 @@ func TestAndroidRelocatorRejectsSymbolicLinksBeforeWriting(t *testing.T) {
 	qmakePath := filepath.Join(kitDir, "bin", "qmake")
 	qmakeBefore := readRelocationFile(t, qmakePath)
 
-	relocator, err := NewAndroidRelocator(testHostQtRequirement(qtrepo.HostMac), qtRoot)
+	relocator, err := NewAndroidRelocator(testQtInstallationIdentity(qtrepo.HostMac), qtRoot)
 	if err != nil {
 		t.Fatalf("NewAndroidRelocator() error = %v", err)
 	}
@@ -167,7 +167,7 @@ func TestAndroidRelocatorRejectsSymbolicLinksBeforeWriting(t *testing.T) {
 
 func TestAndroidRelocatorHonorsCanceledContext(t *testing.T) {
 	qtRoot, _, kitDir := createAndroidRelocationTree(t, qtrepo.HostLinux)
-	relocator, err := NewAndroidRelocator(testHostQtRequirement(qtrepo.HostLinux), qtRoot)
+	relocator, err := NewAndroidRelocator(testQtInstallationIdentity(qtrepo.HostLinux), qtRoot)
 	if err != nil {
 		t.Fatalf("NewAndroidRelocator() error = %v", err)
 	}
@@ -246,8 +246,8 @@ DEFAULT_ANDROID_ABIS = arm64-v8a
 	return qtRoot, hostQtDir, kitDir
 }
 
-func testHostQtRequirement(host qtrepo.Host) qtrepo.HostQtRequirement {
-	return qtrepo.HostQtRequirement{
+func testQtInstallationIdentity(host qtrepo.Host) qtrepo.QtInstallationIdentity {
+	return qtrepo.QtInstallationIdentity{
 		Host:    host,
 		Version: qtrepo.Version{Major: 6, Minor: 8},
 	}

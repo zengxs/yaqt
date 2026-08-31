@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Updates>
+ <PackageUpdate>
+  <Name>qt.qt6.6112.clang_64</Name>
+  <Version>6.11.2-0-202608131016</Version>
+  <DownloadableArchives>qtbase-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z, qtdeclarative-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z</DownloadableArchives>
+  <Operations>
+   <Operation name="Extract">
+    <Argument>@TargetDir@/6.11.2/macos</Argument>
+    <Argument>qtbase-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z</Argument>
+   </Operation>
+   <Operation name="Extract">
+    <Argument>@TargetDir@/6.11.2/macos</Argument>
+    <Argument>qtdeclarative-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z</Argument>
+   </Operation>
+  </Operations>
+ </PackageUpdate>
+ <PackageUpdate>
+  <Name>qt.qt6.6112.addons.qtmultimedia.clang_64</Name>
+  <Version>6.11.2-0-202608131016</Version>
+  <DownloadableArchives>qtmultimedia-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z</DownloadableArchives>
+  <Operations>
+   <Operation name="Extract">
+    <Argument>@TargetDir@/6.11.2/macos</Argument>
+    <Argument>qtmultimedia-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z</Argument>
+   </Operation>
+  </Operations>
+ </PackageUpdate>
+</Updates>

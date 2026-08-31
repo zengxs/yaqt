@@ -49,7 +49,7 @@ type iniReplacement struct {
 // NewAndroidRelocator finds and validates the matching desktop Qt beneath the
 // version directory in qtRoot.
 func NewAndroidRelocator(
-	requirement qtrepo.HostQtRequirement,
+	requirement qtrepo.QtInstallationIdentity,
 	qtRoot string,
 ) (*AndroidRelocator, error) {
 	hostQt, err := discoverHostQt(requirement, qtRoot)

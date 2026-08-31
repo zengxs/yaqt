@@ -34,7 +34,7 @@ type stubArchiveExtractor struct {
 	events      *[]string
 }
 
-type stubAndroidRelocator struct {
+type stubInstallRelocator struct {
 	kitDirs []string
 	events  *[]string
 }
@@ -61,7 +61,7 @@ func (stub *stubArchiveExtractor) Extract(_ context.Context, archivePath, destin
 	return nil
 }
 
-func (stub *stubAndroidRelocator) Relocate(_ context.Context, kitDir string) error {
+func (stub *stubInstallRelocator) Relocate(_ context.Context, kitDir string) error {
 	stub.kitDirs = append(stub.kitDirs, kitDir)
 	if stub.events != nil {
 		*stub.events = append(*stub.events, "relocate "+filepath.Base(kitDir))
@@ -129,8 +129,9 @@ func TestInstallQtDryRun(t *testing.T) {
 	client := &stubRepositoryClient{
 		installPlan: qtrepo.InstallPlan{
 			Version: qtrepo.Version{Major: 6, Minor: 8},
+			Host:    qtrepo.HostLinux,
 			Target:  qtrepo.TargetAndroid,
-			HostQt: qtrepo.HostQtRequirement{
+			HostQt: &qtrepo.QtInstallationIdentity{
 				Host:    qtrepo.HostLinux,
 				Version: qtrepo.Version{Major: 6, Minor: 8},
 			},
@@ -221,11 +222,130 @@ func TestInstallQtDryRun(t *testing.T) {
 		"qtbase",
 		"https://mirror.example/qtbase.7z.sha256",
 		"module qtmultimedia: qt.qt6.680.addons.qtmultimedia.android_arm64_v8a",
-		"Post-install: relocate Android Qt paths and connect the kit to the matching host Qt.",
+		"Post-install: relocate Android Qt paths and connect each kit to the matching host Qt.",
 	} {
 		if !bytes.Contains(output.Bytes(), []byte(want)) {
 			t.Errorf("output does not contain %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestInstallQtDesktopDryRunUsesNativeArchitecture(t *testing.T) {
+	output := &bytes.Buffer{}
+	root, err := filepath.Abs(filepath.Join(".tmp", "desktop-cli-root"))
+	if err != nil {
+		t.Fatalf("filepath.Abs() error = %v", err)
+	}
+	kitDir := filepath.Join(root, "6.11.2", "macos")
+	client := &stubRepositoryClient{
+		installPlan: qtrepo.InstallPlan{
+			Version: qtrepo.Version{Major: 6, Minor: 11, Patch: 2},
+			Host:    qtrepo.HostMac,
+			Target:  qtrepo.TargetDesktop,
+			DesktopKit: &qtrepo.DesktopKit{
+				Architecture: qtrepo.DesktopArchitectureMacClang64,
+				Destination:  kitDir,
+				Packages: []qtrepo.PackageSelection{
+					{
+						Name: "qt.qt6.6112.clang_64",
+						Archives: []qtrepo.Archive{
+							{
+								Name:      "qtbase",
+								URL:       "https://mirror.example/qtbase.7z",
+								ExtractTo: kitDir,
+								Checksum: qtrepo.Checksum{
+									Algorithm: qtrepo.ChecksumSHA256,
+									URL:       "https://mirror.example/qtbase.7z.sha256",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	command := newCommand(
+		client,
+		installCommandDependencies{resolver: client},
+		qtrepo.HostMac,
+		output,
+		&bytes.Buffer{},
+	)
+
+	err = command.Run(context.Background(), []string{
+		"yaqt",
+		"install-qt",
+		"6.11.2",
+		"--target", "desktop",
+		"--root", root,
+		"--dry-run",
+	})
+	if err != nil {
+		t.Fatalf("command.Run() error = %v", err)
+	}
+
+	request := client.installRequest
+	if got, want := request.DesktopArchitecture, qtrepo.DesktopArchitectureMacClang64; got != want {
+		t.Errorf("DesktopArchitecture = %q, want %q", got, want)
+	}
+	if len(request.AndroidABIs) != 0 {
+		t.Errorf("AndroidABIs = %v, want none", request.AndroidABIs)
+	}
+	for _, want := range []string{
+		"Qt 6.11.2 for desktop on mac",
+		"clang_64 -> " + kitDir,
+		"base package: qt.qt6.6112.clang_64",
+		"Post-install: relocate desktop Qt paths.",
+	} {
+		if !bytes.Contains(output.Bytes(), []byte(want)) {
+			t.Errorf("output does not contain %q:\n%s", want, output)
+		}
+	}
+	if bytes.Contains(output.Bytes(), []byte("Host Qt requirement:")) {
+		t.Errorf("desktop plan unexpectedly contains a host Qt requirement:\n%s", output)
+	}
+}
+
+func TestInstallQtRejectsTargetSpecificArchitectureFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "desktop ABI",
+			args: []string{"--target", "desktop", "--abi", "arm64-v8a"},
+			want: "--abi can be used only with --target android",
+		},
+		{
+			name: "Android desktop architecture",
+			args: []string{"--target", "android", "--abi", "arm64-v8a", "--arch", "linux_gcc_64"},
+			want: "--arch can be used only with --target desktop",
+		},
+		{
+			name: "Android without ABI",
+			args: []string{"--target", "android"},
+			want: "at least one --abi is required",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := &stubRepositoryClient{}
+			command := newCommand(
+				client,
+				installCommandDependencies{resolver: client},
+				qtrepo.HostLinux,
+				&bytes.Buffer{},
+				&bytes.Buffer{},
+			)
+			args := []string{"yaqt", "install-qt", "6.8.0", "--root", filepath.Join(".tmp", "Qt"), "--dry-run"}
+			args = append(args, test.args...)
+			err := command.Run(context.Background(), args)
+			if err == nil || !bytes.Contains([]byte(err.Error()), []byte(test.want)) {
+				t.Fatalf("command.Run() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -242,6 +362,7 @@ func TestInstallQtDownloadOnlyUsesExplicitCacheDirectory(t *testing.T) {
 	client := &stubRepositoryClient{
 		installPlan: qtrepo.InstallPlan{
 			Version: qtrepo.Version{Major: 6, Minor: 8},
+			Host:    qtrepo.HostLinux,
 			Target:  qtrepo.TargetAndroid,
 			AndroidKits: []qtrepo.AndroidKit{
 				{
@@ -314,6 +435,7 @@ func TestInstallQtExtractOnlyDownloadsAndExtractsArchives(t *testing.T) {
 	client := &stubRepositoryClient{
 		installPlan: qtrepo.InstallPlan{
 			Version: qtrepo.Version{Major: 6, Minor: 8},
+			Host:    qtrepo.HostLinux,
 			Target:  qtrepo.TargetAndroid,
 			AndroidKits: []qtrepo.AndroidKit{
 				{Packages: []qtrepo.PackageSelection{{Name: "qt.qt6.680.android_arm64_v8a", Archives: []qtrepo.Archive{archive}}}},
@@ -374,6 +496,9 @@ func TestInstallQtExtractOnlyDownloadsEveryArchiveBeforeExtraction(t *testing.T)
 	}
 	client := &stubRepositoryClient{
 		installPlan: qtrepo.InstallPlan{
+			Version: qtrepo.Version{Major: 6, Minor: 8},
+			Host:    qtrepo.HostLinux,
+			Target:  qtrepo.TargetAndroid,
 			AndroidKits: []qtrepo.AndroidKit{
 				{Packages: []qtrepo.PackageSelection{{Archives: archives}}},
 			},
@@ -428,8 +553,9 @@ func TestInstallQtCompleteDownloadsExtractsAndRelocates(t *testing.T) {
 	client := &stubRepositoryClient{
 		installPlan: qtrepo.InstallPlan{
 			Version: qtrepo.Version{Major: 6, Minor: 8},
+			Host:    qtrepo.HostLinux,
 			Target:  qtrepo.TargetAndroid,
-			HostQt: qtrepo.HostQtRequirement{
+			HostQt: &qtrepo.QtInstallationIdentity{
 				Host:    qtrepo.HostLinux,
 				Version: qtrepo.Version{Major: 6, Minor: 8},
 			},
@@ -453,14 +579,14 @@ func TestInstallQtCompleteDownloadsExtractsAndRelocates(t *testing.T) {
 		return fetcher, nil
 	})
 	extractor := &stubArchiveExtractor{events: &events}
-	relocator := &stubAndroidRelocator{events: &events}
-	var configuredRequirement qtrepo.HostQtRequirement
+	relocator := &stubInstallRelocator{events: &events}
+	var configuredPlan qtrepo.InstallPlan
 	var configuredRoot string
-	relocatorFactory := androidRelocatorFactory(func(
-		requirement qtrepo.HostQtRequirement,
+	relocatorFactory := installRelocatorFactory(func(
+		plan qtrepo.InstallPlan,
 		root string,
-	) (androidRelocator, error) {
-		configuredRequirement = requirement
+	) (installRelocator, error) {
+		configuredPlan = plan
 		configuredRoot = root
 		return relocator, nil
 	})
@@ -489,10 +615,11 @@ func TestInstallQtCompleteDownloadsExtractsAndRelocates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("command.Run() error = %v", err)
 	}
-	if configuredRequirement != client.installPlan.HostQt || configuredRoot != qtRoot {
+	if configuredPlan.HostQt == nil || client.installPlan.HostQt == nil ||
+		*configuredPlan.HostQt != *client.installPlan.HostQt || configuredRoot != qtRoot {
 		t.Errorf(
 			"relocation configuration = requirement %+v, root %q; want requirement %+v, root %q",
-			configuredRequirement,
+			configuredPlan.HostQt,
 			configuredRoot,
 			client.installPlan.HostQt,
 			qtRoot,
@@ -514,7 +641,96 @@ func TestInstallQtCompleteDownloadsExtractsAndRelocates(t *testing.T) {
 		"Cached qtbase:",
 		"Extracted qtbase to " + kitDir,
 		"Relocated arm64-v8a kit: " + kitDir,
-		"Installed Qt 6.8.0 for Android.",
+		"Installed Qt 6.8.0 for android.",
+	} {
+		if !bytes.Contains(output.Bytes(), []byte(want)) {
+			t.Errorf("output does not contain %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestInstallQtDesktopCompleteDownloadsExtractsAndRelocates(t *testing.T) {
+	events := make([]string, 0)
+	output := &bytes.Buffer{}
+	qtRoot, err := filepath.Abs(filepath.Join(".tmp", "desktop-complete-root"))
+	if err != nil {
+		t.Fatalf("filepath.Abs() error = %v", err)
+	}
+	kitDir := filepath.Join(qtRoot, "6.11.2", "macos")
+	archive := qtrepo.Archive{Name: "qtbase", ExtractTo: kitDir}
+	client := &stubRepositoryClient{
+		installPlan: qtrepo.InstallPlan{
+			Version: qtrepo.Version{Major: 6, Minor: 11, Patch: 2},
+			Host:    qtrepo.HostMac,
+			Target:  qtrepo.TargetDesktop,
+			DesktopKit: &qtrepo.DesktopKit{
+				Architecture: qtrepo.DesktopArchitectureMacClang64,
+				Destination:  kitDir,
+				Packages: []qtrepo.PackageSelection{
+					{Archives: []qtrepo.Archive{archive}},
+				},
+			},
+		},
+	}
+	cacheDir := filepath.Join(".tmp", "desktop-complete-cache")
+	fetcher := &stubArchiveFetcher{
+		destination: filepath.Join(cacheDir, "downloads"),
+		events:      &events,
+	}
+	extractor := &stubArchiveExtractor{events: &events}
+	relocator := &stubInstallRelocator{events: &events}
+	var configuredTarget qtrepo.Target
+	command := newCommand(
+		client,
+		installCommandDependencies{
+			resolver: client,
+			fetcherFactory: archiveFetcherFactory(func(string) (archiveFetcher, error) {
+				return fetcher, nil
+			}),
+			extractor: extractor,
+			relocatorFactory: installRelocatorFactory(func(
+				plan qtrepo.InstallPlan,
+				_ string,
+			) (installRelocator, error) {
+				configuredTarget = plan.Target
+				return relocator, nil
+			}),
+		},
+		qtrepo.HostMac,
+		output,
+		&bytes.Buffer{},
+	)
+
+	err = command.Run(context.Background(), []string{
+		"yaqt",
+		"install-qt",
+		"6.11.2",
+		"--target", "desktop",
+		"--root", qtRoot,
+		"--cache-dir", cacheDir,
+	})
+	if err != nil {
+		t.Fatalf("command.Run() error = %v", err)
+	}
+	if configuredTarget != qtrepo.TargetDesktop {
+		t.Errorf("relocator target = %q, want %q", configuredTarget, qtrepo.TargetDesktop)
+	}
+	if got, want := relocator.kitDirs, []string{kitDir}; len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("relocated kit directories = %v, want %v", got, want)
+	}
+	wantEvents := []string{"fetch qtbase", "extract qtbase.7z", "relocate macos"}
+	if len(events) != len(wantEvents) {
+		t.Fatalf("installation events = %v, want %v", events, wantEvents)
+	}
+	for index, want := range wantEvents {
+		if events[index] != want {
+			t.Errorf("installation event %d = %q, want %q", index, events[index], want)
+		}
+	}
+	for _, want := range []string{
+		"Extracted qtbase to " + kitDir,
+		"Relocated clang_64 kit: " + kitDir,
+		"Installed Qt 6.11.2 for desktop.",
 	} {
 		if !bytes.Contains(output.Bytes(), []byte(want)) {
 			t.Errorf("output does not contain %q:\n%s", want, output)
@@ -592,8 +808,8 @@ func TestInstallQtRejectsRemovedHostQtDirectoryFlag(t *testing.T) {
 
 func TestInstallQtCompleteRejectsCrossHostInstallation(t *testing.T) {
 	client := &stubRepositoryClient{}
-	relocatorFactory := androidRelocatorFactory(func(qtrepo.HostQtRequirement, string) (androidRelocator, error) {
-		return &stubAndroidRelocator{}, nil
+	relocatorFactory := installRelocatorFactory(func(qtrepo.InstallPlan, string) (installRelocator, error) {
+		return &stubInstallRelocator{}, nil
 	})
 	command := newCommand(
 		client,

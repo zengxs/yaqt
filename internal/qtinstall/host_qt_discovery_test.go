@@ -14,7 +14,7 @@ func TestNewAndroidRelocatorRequiresHostTools(t *testing.T) {
 	writeHostQtTool(t, filepath.Join(hostQtDir, "bin", "qmake6"), qtrepo.HostMac)
 	writeRelocationFile(t, filepath.Join(hostQtDir, "mkspecs", "qconfig.pri"), "QT_VERSION = 6.8.0\n", 0o644)
 
-	_, err := NewAndroidRelocator(testHostQtRequirement(qtrepo.HostMac), qtRoot)
+	_, err := NewAndroidRelocator(testQtInstallationIdentity(qtrepo.HostMac), qtRoot)
 	if err == nil || !strings.Contains(err.Error(), "qtpaths6") {
 		t.Fatalf("NewAndroidRelocator() error = %v, want a missing qtpaths6 error", err)
 	}
@@ -28,7 +28,7 @@ func TestNewAndroidRelocatorRequiresMatchingQtVersion(t *testing.T) {
 	}
 	writeRelocationFile(t, filepath.Join(hostQtDir, "mkspecs", "qconfig.pri"), "QT_VERSION = 6.8.0\n", 0o644)
 
-	_, err := NewAndroidRelocator(qtrepo.HostQtRequirement{
+	_, err := NewAndroidRelocator(qtrepo.QtInstallationIdentity{
 		Host:    qtrepo.HostMac,
 		Version: qtrepo.Version{Major: 6, Minor: 12},
 	}, qtRoot)
@@ -45,7 +45,7 @@ func TestNewAndroidRelocatorRejectsAmbiguousHostQtDirectories(t *testing.T) {
 	}
 	writeRelocationFile(t, filepath.Join(secondHostQtDir, "mkspecs", "qconfig.pri"), "QT_VERSION = 6.8.0\n", 0o644)
 
-	_, err := NewAndroidRelocator(testHostQtRequirement(qtrepo.HostMac), qtRoot)
+	_, err := NewAndroidRelocator(testQtInstallationIdentity(qtrepo.HostMac), qtRoot)
 	if err == nil || !strings.Contains(err.Error(), "multiple desktop Qt") {
 		t.Fatalf("NewAndroidRelocator() error = %v, want an ambiguous host Qt error", err)
 	}
@@ -69,7 +69,7 @@ func TestNewAndroidRelocatorRejectsExecutableForDifferentHost(t *testing.T) {
 		0o644,
 	)
 
-	_, err := NewAndroidRelocator(testHostQtRequirement(qtrepo.HostMac), qtRoot)
+	_, err := NewAndroidRelocator(testQtInstallationIdentity(qtrepo.HostMac), qtRoot)
 	if err == nil || !strings.Contains(err.Error(), "does not match host mac") {
 		t.Fatalf("NewAndroidRelocator() error = %v, want a host executable mismatch error", err)
 	}

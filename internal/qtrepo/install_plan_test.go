@@ -38,6 +38,12 @@ func TestClientResolveAndroidInstallPlanForQt680(t *testing.T) {
 	if got, want := plan.Target, TargetAndroid; got != want {
 		t.Errorf("plan.Target = %q, want %q", got, want)
 	}
+	if got, want := plan.Host, HostLinux; got != want {
+		t.Errorf("plan.Host = %q, want %q", got, want)
+	}
+	if plan.HostQt == nil {
+		t.Fatal("plan.HostQt = nil, want a desktop Qt requirement")
+	}
 	if got, want := plan.HostQt.Host, HostLinux; got != want {
 		t.Errorf("plan.HostQt.Host = %q, want %q", got, want)
 	}
@@ -90,6 +96,124 @@ func TestClientResolveAndroidInstallPlanForQt680(t *testing.T) {
 	}
 	if got, want := first.ExtractTo, filepath.Clean("/opt/Qt"); got != want {
 		t.Errorf("ExtractTo = %q, want %q", got, want)
+	}
+}
+
+func TestClientResolveDesktopInstallPlan(t *testing.T) {
+	server := newMetadataServer(
+		t,
+		"/mirror/online/qtsdkrepository/mac_x64/desktop/qt6_6112/qt6_6112/Updates.xml",
+		"testdata/desktop-6.11.2-mac-updates.xml",
+	)
+	defer server.Close()
+
+	repository, err := NewRepository(server.URL+"/mirror", HostMac, TargetDesktop)
+	if err != nil {
+		t.Fatalf("NewRepository() error = %v", err)
+	}
+	plan, err := NewClient(server.Client()).ResolveInstall(context.Background(), InstallRequest{
+		Repository:          repository,
+		Version:             Version{Major: 6, Minor: 11, Patch: 2},
+		DesktopArchitecture: DesktopArchitectureMacClang64,
+		Modules:             []string{"qtmultimedia"},
+		Destination:         "/opt/Qt",
+	})
+	if err != nil {
+		t.Fatalf("ResolveInstall() error = %v", err)
+	}
+
+	if got, want := plan.Target, TargetDesktop; got != want {
+		t.Errorf("plan.Target = %q, want %q", got, want)
+	}
+	if got, want := plan.Host, HostMac; got != want {
+		t.Errorf("plan.Host = %q, want %q", got, want)
+	}
+	if plan.HostQt != nil {
+		t.Errorf("plan.HostQt = %v, want no external host Qt requirement", plan.HostQt)
+	}
+	if plan.DesktopKit == nil {
+		t.Fatal("plan.DesktopKit = nil, want a desktop kit")
+	}
+	kit := plan.DesktopKit
+	if got, want := kit.Architecture, DesktopArchitectureMacClang64; got != want {
+		t.Errorf("desktop architecture = %q, want %q", got, want)
+	}
+	if got, want := kit.Destination, filepath.Join("/opt/Qt", "6.11.2", "macos"); got != want {
+		t.Errorf("desktop destination = %q, want %q", got, want)
+	}
+	if got, want := len(kit.Packages), 2; got != want {
+		t.Fatalf("len(desktop packages) = %d, want %d", got, want)
+	}
+	if got, want := kit.Packages[0].Name, "qt.qt6.6112.clang_64"; got != want {
+		t.Errorf("base package name = %q, want %q", got, want)
+	}
+	if got, want := kit.Packages[1].Module, "qtmultimedia"; got != want {
+		t.Errorf("module package module = %q, want %q", got, want)
+	}
+	if got, want := archiveNames(flattenArchives(kit.Packages)), []string{"qtbase", "qtdeclarative", "qtmultimedia"}; !equalStrings(got, want) {
+		t.Fatalf("archive names = %v, want %v", got, want)
+	}
+
+	first := kit.Packages[0].Archives[0]
+	wantURL := server.URL + "/mirror/online/qtsdkrepository/mac_x64/desktop/qt6_6112/qt6_6112/" +
+		"qt.qt6.6112.clang_64/6.11.2-0-202608131016qtbase-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z"
+	if got := first.URL; got != wantURL {
+		t.Errorf("archive URL = %q, want %q", got, wantURL)
+	}
+	if got, want := first.ExtractTo, filepath.Join("/opt/Qt", "6.11.2", "macos"); got != want {
+		t.Errorf("archive ExtractTo = %q, want %q", got, want)
+	}
+}
+
+func TestClientResolveDesktopInstallPlanUsesLegacyQt680ArchiveLayout(t *testing.T) {
+	server := newMetadataServer(
+		t,
+		"/online/qtsdkrepository/mac_x64/desktop/qt6_680/qt6_680/Updates.xml",
+		"testdata/desktop-6.8.0-mac-updates.xml",
+	)
+	defer server.Close()
+
+	repository, err := NewRepository(server.URL, HostMac, TargetDesktop)
+	if err != nil {
+		t.Fatalf("NewRepository() error = %v", err)
+	}
+	plan, err := NewClient(server.Client()).ResolveInstall(context.Background(), InstallRequest{
+		Repository:  repository,
+		Version:     Version{Major: 6, Minor: 8},
+		Destination: "/opt/Qt",
+	})
+	if err != nil {
+		t.Fatalf("ResolveInstall() error = %v", err)
+	}
+
+	archive := plan.DesktopKit.Packages[0].Archives[0]
+	if got, want := archive.ExtractTo, filepath.Clean("/opt/Qt"); got != want {
+		t.Errorf("archive ExtractTo = %q, want legacy root %q", got, want)
+	}
+}
+
+func TestDesktopMetadataURLUsesSplitWindowsLayoutFromQt611(t *testing.T) {
+	repository, err := NewRepository(DefaultBaseURL, HostWindows, TargetDesktop)
+	if err != nil {
+		t.Fatalf("NewRepository() error = %v", err)
+	}
+	descriptor, err := DesktopArchitectureWindowsMSVC64.descriptor()
+	if err != nil {
+		t.Fatalf("descriptor() error = %v", err)
+	}
+
+	got, err := desktopMetadataURL(
+		repository,
+		Version{Major: 6, Minor: 11, Patch: 2},
+		DesktopArchitectureWindowsMSVC64,
+		descriptor,
+	)
+	if err != nil {
+		t.Fatalf("desktopMetadataURL() error = %v", err)
+	}
+	want := DefaultBaseURL + "/online/qtsdkrepository/windows_x86/desktop/qt6_6112/qt6_6112_msvc2022_64/Updates.xml"
+	if got != want {
+		t.Errorf("desktopMetadataURL() = %q, want %q", got, want)
 	}
 }
 

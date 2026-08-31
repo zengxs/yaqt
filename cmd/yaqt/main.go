@@ -28,17 +28,8 @@ func main() {
 		fetcherFactory: func(cacheDir string) (archiveFetcher, error) {
 			return qtinstall.NewArchiveStore(nil, cacheDir)
 		},
-		extractor: qtinstall.SevenZipExtractor{},
-		relocatorFactory: func(
-			requirement qtrepo.HostQtRequirement,
-			qtRoot string,
-		) (androidRelocator, error) {
-			relocator, err := qtinstall.NewAndroidRelocator(requirement, qtRoot)
-			if err != nil {
-				return nil, err
-			}
-			return relocator, nil
-		},
+		extractor:        qtinstall.SevenZipExtractor{},
+		relocatorFactory: defaultInstallRelocatorFactory,
 	}
 	command := newCommand(
 		client,
@@ -71,17 +62,17 @@ type archiveExtractor interface {
 	Extract(context.Context, string, string) error
 }
 
-type androidRelocator interface {
+type installRelocator interface {
 	Relocate(context.Context, string) error
 }
 
-type androidRelocatorFactory func(qtrepo.HostQtRequirement, string) (androidRelocator, error)
+type installRelocatorFactory func(qtrepo.InstallPlan, string) (installRelocator, error)
 
 type installCommandDependencies struct {
 	resolver         installResolver
 	fetcherFactory   archiveFetcherFactory
 	extractor        archiveExtractor
-	relocatorFactory androidRelocatorFactory
+	relocatorFactory installRelocatorFactory
 }
 
 type installExecutionMode uint8
@@ -172,9 +163,9 @@ func newInstallQtCommand(
 		Name:      "install-qt",
 		Usage:     "Install or materialize a Qt SDK installation",
 		ArgsUsage: "VERSION",
-		Description: "Resolve the Qt archives, extraction paths, and host Qt requirement for an Android installation. " +
-			"The command installs and relocates an Android Qt kit using an existing matching desktop Qt. " +
-			"It can also stop after planning, downloading, or extraction.",
+		Description: "Resolve and install native desktop Qt or Android Qt kits. " +
+			"Android installation uses an existing matching desktop Qt. " +
+			"The command can also stop after planning, downloading, or extraction.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "host",
@@ -183,13 +174,16 @@ func newInstallQtCommand(
 			},
 			&cli.StringFlag{
 				Name:     "target",
-				Usage:    "Qt `target`; currently android",
+				Usage:    "Qt `target`: desktop or android",
 				Required: true,
 			},
+			&cli.StringFlag{
+				Name:  "arch",
+				Usage: "Desktop Qt `architecture`; defaults to the native architecture for the selected host",
+			},
 			&cli.StringSliceFlag{
-				Name:     "abi",
-				Usage:    "Android `ABI`: arm64-v8a, armeabi-v7a, x86, or x86_64; may be repeated",
-				Required: true,
+				Name:  "abi",
+				Usage: "Android `ABI`: arm64-v8a, armeabi-v7a, x86, or x86_64; may be repeated",
 			},
 			&cli.StringSliceFlag{
 				Name:    "module",
@@ -243,8 +237,9 @@ func newInstallQtCommand(
 			if err != nil {
 				return err
 			}
-			if repository.Target != qtrepo.TargetAndroid {
-				return fmt.Errorf("install-qt currently supports only the Android target")
+			targetHandler, err := installTargetHandlerFor(repository.Target)
+			if err != nil {
+				return err
 			}
 			if mode == installExecutionModeInstall {
 				if repository.Host != defaultHost {
@@ -255,37 +250,26 @@ func newInstallQtCommand(
 					)
 				}
 				if dependencies.relocatorFactory == nil {
-					return fmt.Errorf("Android Qt relocator is not configured")
+					return fmt.Errorf("Qt post-install relocator is not configured")
 				}
 			}
 
-			abiValues := command.StringSlice("abi")
-			abis := make([]qtrepo.AndroidABI, 0, len(abiValues))
-			for _, value := range abiValues {
-				abi, err := qtrepo.ParseAndroidABI(value)
-				if err != nil {
-					return err
-				}
-				abis = append(abis, abi)
+			request, err := targetHandler.installRequest(command, repository, version, installRoot)
+			if err != nil {
+				return err
 			}
-			plan, err := dependencies.resolver.ResolveInstall(ctx, qtrepo.InstallRequest{
-				Repository:  repository,
-				Version:     version,
-				AndroidABIs: abis,
-				Modules:     command.StringSlice("module"),
-				Destination: installRoot,
-			})
+			plan, err := dependencies.resolver.ResolveInstall(ctx, request)
 			if err != nil {
 				return err
 			}
 			if mode == installExecutionModeDryRun {
 				return printInstallPlan(output, plan)
 			}
-			var relocator androidRelocator
+			var relocator installRelocator
 			if mode == installExecutionModeInstall {
-				relocator, err = dependencies.relocatorFactory(plan.HostQt, installRoot)
+				relocator, err = dependencies.relocatorFactory(plan, installRoot)
 				if err != nil {
-					return fmt.Errorf("configure Android Qt relocation: %w", err)
+					return fmt.Errorf("configure Qt post-install relocation: %w", err)
 				}
 			}
 
@@ -361,21 +345,27 @@ func printInstallPlan(output io.Writer, plan qtrepo.InstallPlan) error {
 		return err
 	}
 
-	if err := write("Qt %s for %s\n", plan.Version, plan.Target); err != nil {
+	if err := write("Qt %s for %s on %s\n", plan.Version, plan.Target, plan.Host); err != nil {
 		return fmt.Errorf("write install plan: %w", err)
 	}
-	if err := write(
-		"Host Qt requirement: %s desktop %s\n",
-		plan.HostQt.Host,
-		plan.HostQt.Version,
-	); err != nil {
-		return fmt.Errorf("write install plan: %w", err)
-	}
-	for _, kit := range plan.AndroidKits {
-		if err := write("\n%s -> %s\n", kit.ABI, kit.Destination); err != nil {
+	if plan.HostQt != nil {
+		if err := write(
+			"Host Qt requirement: %s desktop %s\n",
+			plan.HostQt.Host,
+			plan.HostQt.Version,
+		); err != nil {
 			return fmt.Errorf("write install plan: %w", err)
 		}
-		for _, packageSelection := range kit.Packages {
+	}
+	kits, err := installPlanKits(plan)
+	if err != nil {
+		return err
+	}
+	for _, kit := range kits {
+		if err := write("\n%s -> %s\n", kit.architecture, kit.destination); err != nil {
+			return fmt.Errorf("write install plan: %w", err)
+		}
+		for _, packageSelection := range kit.packages {
 			selection := "base package"
 			if packageSelection.Module != "" {
 				selection = "module " + packageSelection.Module
@@ -397,7 +387,11 @@ func printInstallPlan(output io.Writer, plan qtrepo.InstallPlan) error {
 			}
 		}
 	}
-	if err := write("\nPost-install: relocate Android Qt paths and connect the kit to the matching host Qt.\n"); err != nil {
+	targetHandler, err := installTargetHandlerFor(plan.Target)
+	if err != nil {
+		return err
+	}
+	if err := write("\nPost-install: %s.\n", targetHandler.postInstallDescription()); err != nil {
 		return fmt.Errorf("write install plan: %w", err)
 	}
 	return nil
@@ -410,7 +404,7 @@ func materializeInstallPlan(
 	cacheDir string,
 	fetcher archiveFetcher,
 	extractor archiveExtractor,
-	relocator androidRelocator,
+	relocator installRelocator,
 	mode installExecutionMode,
 ) error {
 	if fetcher == nil {
@@ -423,7 +417,7 @@ func materializeInstallPlan(
 			return fmt.Errorf("archive extractor is not configured")
 		}
 		if mode == installExecutionModeInstall && relocator == nil {
-			return fmt.Errorf("Android Qt relocator is not configured")
+			return fmt.Errorf("Qt post-install relocator is not configured")
 		}
 	default:
 		return fmt.Errorf("unsupported installation execution mode %d", mode)
@@ -437,8 +431,12 @@ func materializeInstallPlan(
 		path    string
 	}
 	cached := make([]cachedArchive, 0)
-	for _, kit := range plan.AndroidKits {
-		for _, packageSelection := range kit.Packages {
+	kits, err := installPlanKits(plan)
+	if err != nil {
+		return err
+	}
+	for _, kit := range kits {
+		for _, packageSelection := range kit.packages {
 			for _, archive := range packageSelection.Archives {
 				path, err := fetcher.Fetch(ctx, archive)
 				if err != nil {
@@ -473,16 +471,30 @@ func materializeInstallPlan(
 		}
 		return nil
 	}
-	for _, kit := range plan.AndroidKits {
-		if err := relocator.Relocate(ctx, kit.Destination); err != nil {
-			return fmt.Errorf("relocate Android Qt kit %s: %w", kit.ABI, err)
+	for _, kit := range kits {
+		if err := relocator.Relocate(ctx, kit.destination); err != nil {
+			return fmt.Errorf("relocate Qt kit %s: %w", kit.architecture, err)
 		}
-		if _, err := fmt.Fprintf(output, "Relocated %s kit: %s\n", kit.ABI, kit.Destination); err != nil {
-			return fmt.Errorf("write relocated Android Qt kit path: %w", err)
+		if _, err := fmt.Fprintf(output, "Relocated %s kit: %s\n", kit.architecture, kit.destination); err != nil {
+			return fmt.Errorf("write relocated Qt kit path: %w", err)
 		}
 	}
-	if _, err := fmt.Fprintf(output, "Installed Qt %s for Android.\n", plan.Version); err != nil {
+	if _, err := fmt.Fprintf(output, "Installed Qt %s for %s.\n", plan.Version, plan.Target); err != nil {
 		return fmt.Errorf("write installation status: %w", err)
 	}
 	return nil
+}
+
+type installPlanKit struct {
+	architecture string
+	destination  string
+	packages     []qtrepo.PackageSelection
+}
+
+func installPlanKits(plan qtrepo.InstallPlan) ([]installPlanKit, error) {
+	handler, err := installTargetHandlerFor(plan.Target)
+	if err != nil {
+		return nil, err
+	}
+	return handler.installPlanKits(plan)
 }

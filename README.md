@@ -38,8 +38,31 @@ host and target. Android, WebAssembly, and shared Qt content are routed through
 Qt's platform-independent `all_os` repository without changing the user-visible
 host.
 
-Install an Android Qt kit using an existing desktop Qt installation of the same
-version:
+Install the native desktop Qt for the current host:
+
+```console
+$ yaqt install-qt 6.11.2 \
+    --target desktop \
+    --root /opt/Qt
+```
+
+The desktop architecture defaults to the native package for the selected host:
+
+| Host | Architecture | Installation directory |
+| --- | --- | --- |
+| `mac` | `clang_64` | `macos` |
+| `linux` | `linux_gcc_64` | `gcc_64` |
+| `linux_arm64` | `linux_gcc_arm64` | `gcc_arm64` |
+| `windows` | `win64_msvc2022_64` | `msvc2022_64` |
+| `windows_arm64` | `win64_msvc2022_arm64` | `msvc2022_arm64` |
+
+Use `--arch` to state that native architecture explicitly. A complete desktop
+installation downloads and verifies the selected archives, extracts them under
+`<root>/<version>/<installation-directory>`, writes a relative `bin/qt.conf`,
+repairs package metadata that contains Qt build-machine paths, and validates the
+desktop Qt tools and version before reporting success.
+
+Install an Android Qt kit using a desktop Qt installation of the same version:
 
 ```console
 $ yaqt install-qt 6.8.0 \
@@ -52,11 +75,12 @@ The root is the directory that contains versioned Qt installations, so it must
 not include `6.8.0` itself. Before downloading, yaqt searches `/opt/Qt/6.8.0`
 for exactly one desktop Qt installation for the current host. That installation
 must contain `bin/qmake6` and `bin/qtpaths6` (with `.exe` suffixes on Windows).
-yaqt does not download this host dependency yet, and reports an error if no
-matching desktop Qt or multiple candidates are present. A complete installation
-downloads and verifies every selected archive, extracts the Android kit to
-`/opt/Qt/6.8.0/android_arm64_v8a`, and relocates its Qt tool wrappers and
-configuration files to the discovered desktop Qt.
+yaqt does not install this dependency automatically yet; run an explicit
+`--target desktop` installation first when it is missing. yaqt reports an error
+if no matching desktop Qt or multiple candidates are present. A complete
+installation downloads and verifies every selected archive, extracts the
+Android kit to `/opt/Qt/6.8.0/android_arm64_v8a`, and relocates its Qt tool
+wrappers and configuration files to the discovered desktop Qt.
 
 Plan an Android installation without downloading or changing any files:
 
@@ -69,8 +93,8 @@ $ yaqt install-qt 6.8.0 \
 ```
 
 The `--abi` flag accepts `arm64-v8a`, `armeabi-v7a`, `x86`, or `x86_64` and may
-be repeated. Additional Qt modules may be selected with a repeatable `--module`
-flag:
+be repeated. Additional Qt modules may be selected for either desktop or
+Android installations with a repeatable `--module` flag:
 
 ```console
 $ yaqt install-qt 6.8.0 \
@@ -110,8 +134,10 @@ $ yaqt install-qt 6.8.0 \
     --extract-only
 ```
 
-The extractor accepts regular files and directories, rejects unsafe archive
-paths and special files, and preserves safe permission and executable bits.
+The extractor accepts regular files, directories, and safe relative symbolic
+links. It rejects archive paths or link targets that resolve outside the
+destination, rejects other special files, and preserves safe permission and
+executable bits.
 This mode deliberately stops before Android path relocation, so its output is
 not a complete Qt installation.
 

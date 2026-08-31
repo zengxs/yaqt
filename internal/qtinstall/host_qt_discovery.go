@@ -24,7 +24,7 @@ var qtVersionSettingPattern = regexp.MustCompile(
 
 type hostExecutableValidator func(io.ReaderAt) error
 
-type androidHostProfile struct {
+type hostProfile struct {
 	windows                bool
 	toolExtension          string
 	wrapperExtension       string
@@ -35,10 +35,10 @@ type androidHostProfile struct {
 
 type hostQtInstallation struct {
 	directory string
-	profile   androidHostProfile
+	profile   hostProfile
 }
 
-var androidHostProfiles = map[qtrepo.Host]androidHostProfile{
+var hostProfiles = map[qtrepo.Host]hostProfile{
 	qtrepo.HostMac: {
 		androidNDKHost:         "darwin-x86_64",
 		hostLibraryExecutables: "libexec",
@@ -72,23 +72,23 @@ var androidHostProfiles = map[qtrepo.Host]androidHostProfile{
 	},
 }
 
-func androidHostProfileFor(host qtrepo.Host) (androidHostProfile, error) {
-	profile, ok := androidHostProfiles[host]
+func hostProfileFor(host qtrepo.Host) (hostProfile, error) {
+	profile, ok := hostProfiles[host]
 	if !ok {
-		return androidHostProfile{}, fmt.Errorf("unsupported Android Qt host %q", host)
+		return hostProfile{}, fmt.Errorf("unsupported Qt host %q", host)
 	}
 	return profile, nil
 }
 
 func discoverHostQt(
-	requirement qtrepo.HostQtRequirement,
+	identity qtrepo.QtInstallationIdentity,
 	qtRoot string,
 ) (hostQtInstallation, error) {
-	profile, err := androidHostProfileFor(requirement.Host)
+	profile, err := hostProfileFor(identity.Host)
 	if err != nil {
 		return hostQtInstallation{}, err
 	}
-	directory, err := findHostQtDirectory(requirement, qtRoot, profile)
+	directory, err := findHostQtDirectory(identity, qtRoot, profile)
 	if err != nil {
 		return hostQtInstallation{}, err
 	}
@@ -111,15 +111,15 @@ func (hostQt hostQtInstallation) toolPath(name string) string {
 }
 
 func findHostQtDirectory(
-	requirement qtrepo.HostQtRequirement,
+	identity qtrepo.QtInstallationIdentity,
 	qtRoot string,
-	profile androidHostProfile,
+	profile hostProfile,
 ) (string, error) {
-	root, err := ResolveInstallRoot(qtRoot, requirement.Version)
+	root, err := ResolveInstallRoot(qtRoot, identity.Version)
 	if err != nil {
 		return "", err
 	}
-	versionDir := filepath.Join(root, requirement.Version.String())
+	versionDir := filepath.Join(root, identity.Version.String())
 	entries, err := os.ReadDir(versionDir)
 	if err != nil {
 		return "", fmt.Errorf("inspect Qt version directory %s: %w", versionDir, err)
@@ -132,7 +132,7 @@ func findHostQtDirectory(
 			continue
 		}
 		candidate := filepath.Join(versionDir, entry.Name())
-		if err := validateHostQtDirectory(requirement, candidate, profile); err != nil {
+		if err := validateHostQtDirectory(identity, candidate, profile); err != nil {
 			if resemblesHostQtDirectory(candidate, profile) {
 				rejections = append(rejections, fmt.Sprintf("%s: %v", candidate, err))
 			}
@@ -147,8 +147,8 @@ func findHostQtDirectory(
 	case 0:
 		message := fmt.Sprintf(
 			"no desktop Qt %s for %s found under %s",
-			requirement.Version,
-			requirement.Host,
+			identity.Version,
+			identity.Host,
 			versionDir,
 		)
 		if len(rejections) > 0 {
@@ -158,8 +158,8 @@ func findHostQtDirectory(
 	default:
 		return "", fmt.Errorf(
 			"multiple desktop Qt %s installations for %s found under %s: %s",
-			requirement.Version,
-			requirement.Host,
+			identity.Version,
+			identity.Host,
 			versionDir,
 			strings.Join(candidates, ", "),
 		)
@@ -167,9 +167,9 @@ func findHostQtDirectory(
 }
 
 func validateHostQtDirectory(
-	requirement qtrepo.HostQtRequirement,
+	identity qtrepo.QtInstallationIdentity,
 	hostQtDir string,
-	profile androidHostProfile,
+	profile hostProfile,
 ) error {
 	info, err := os.Stat(hostQtDir)
 	if err != nil {
@@ -207,7 +207,7 @@ func validateHostQtDirectory(
 			return fmt.Errorf(
 				"host Qt tool %s does not match host %s: %w",
 				toolPath,
-				requirement.Host,
+				identity.Host,
 				err,
 			)
 		}
@@ -216,17 +216,17 @@ func validateHostQtDirectory(
 	if err != nil {
 		return err
 	}
-	if hostVersion != requirement.Version {
+	if hostVersion != identity.Version {
 		return fmt.Errorf(
-			"host Qt directory contains Qt %s, but the Android kit requires Qt %s",
+			"host Qt directory contains Qt %s, but Qt %s was requested",
 			hostVersion,
-			requirement.Version,
+			identity.Version,
 		)
 	}
 	return nil
 }
 
-func validateHostQtExecutable(path string, profile androidHostProfile) (resultErr error) {
+func validateHostQtExecutable(path string, profile hostProfile) (resultErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open executable: %w", err)
@@ -318,7 +318,7 @@ func validatePEExecutable(reader io.ReaderAt, machine uint16) error {
 	return nil
 }
 
-func resemblesHostQtDirectory(path string, profile androidHostProfile) bool {
+func resemblesHostQtDirectory(path string, profile hostProfile) bool {
 	if info, err := os.Stat(filepath.Join(path, "mkspecs", "qconfig.pri")); err == nil && info.Mode().IsRegular() {
 		return true
 	}

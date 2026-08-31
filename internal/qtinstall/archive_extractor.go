@@ -9,9 +9,11 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/bodgit/sevenzip"
 )
@@ -19,18 +21,21 @@ import (
 const (
 	defaultDirectoryMode = 0o755
 	defaultFileMode      = 0o644
+	maxSymlinkDepth      = 255
+	maxSymlinkTargetSize = 4096
 	safePermissionMask   = 0o755
 )
 
-// SevenZipExtractor safely extracts regular files and directories from a
-// 7-Zip archive. It rejects entries that could escape or redirect writes from
-// the destination root.
+// SevenZipExtractor safely extracts regular files, directories, and relative
+// symbolic links from a 7-Zip archive. It rejects entries that could escape or
+// redirect writes from the destination root.
 type SevenZipExtractor struct{}
 
 type extractionEntry struct {
 	file         *sevenzip.File
 	relativePath string
 	mode         fs.FileMode
+	linkTarget   string
 }
 
 // Extract extracts archivePath into destination. All archive entries and
@@ -91,6 +96,7 @@ func (SevenZipExtractor) Extract(
 	}
 
 	directories := make([]extractionEntry, 0)
+	symlinks := make([]extractionEntry, 0)
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("extract 7-Zip archive %s: %w", archivePath, err)
@@ -102,8 +108,24 @@ func (SevenZipExtractor) Extract(
 			directories = append(directories, entry)
 			continue
 		}
+		if isSymlink(entry.mode) {
+			symlinks = append(symlinks, entry)
+			continue
+		}
 		if err := extractRegularFile(ctx, root, entry); err != nil {
 			return fmt.Errorf("extract archive entry %q: %w", entry.file.Name, err)
+		}
+	}
+
+	for _, entry := range symlinks {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("extract 7-Zip archive %s: %w", archivePath, err)
+		}
+		parent := filepath.Dir(entry.relativePath)
+		if parent != "." {
+			if err := root.MkdirAll(parent, defaultDirectoryMode); err != nil {
+				return fmt.Errorf("create archive symbolic link parent %q: %w", entry.file.Name, err)
+			}
 		}
 	}
 
@@ -114,6 +136,15 @@ func (SevenZipExtractor) Extract(
 	for _, entry := range directories {
 		if err := root.Chmod(entry.relativePath, archivePermissions(entry.mode)); err != nil {
 			return fmt.Errorf("set archive directory mode %q: %w", entry.file.Name, err)
+		}
+	}
+
+	for _, entry := range symlinks {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("extract 7-Zip archive %s: %w", archivePath, err)
+		}
+		if err := extractSymlink(root, entry); err != nil {
+			return fmt.Errorf("extract archive symbolic link %q: %w", entry.file.Name, err)
 		}
 	}
 	return nil
@@ -135,10 +166,18 @@ func preflightArchive(ctx context.Context, files []*sevenzip.File) ([]extraction
 			return nil, fmt.Errorf("archive contains duplicate entry %q", file.Name)
 		}
 		seen[relativePath] = struct{}{}
+		linkTarget := ""
+		if isSymlink(mode) {
+			linkTarget, err = readSymlinkTarget(ctx, file)
+			if err != nil {
+				return nil, fmt.Errorf("archive symbolic link %q: %w", file.Name, err)
+			}
+		}
 		entries = append(entries, extractionEntry{
 			file:         file,
 			relativePath: relativePath,
 			mode:         mode,
+			linkTarget:   linkTarget,
 		})
 	}
 	if err := validateArchiveLayout(entries); err != nil {
@@ -163,7 +202,7 @@ func validateArchiveLayout(entries []extractionEntry) error {
 			}
 		}
 	}
-	return nil
+	return validateSymlinkTargets(nil, entries)
 }
 
 func validateArchiveEntry(name string, mode fs.FileMode) (string, error) {
@@ -174,7 +213,7 @@ func validateArchiveEntry(name string, mode fs.FileMode) (string, error) {
 		strings.ContainsAny(name, "\\:\x00") {
 		return "", fmt.Errorf("archive contains unsafe entry path %q", name)
 	}
-	if !mode.IsDir() && !mode.IsRegular() {
+	if !mode.IsDir() && !mode.IsRegular() && !isSymlink(mode) {
 		return "", fmt.Errorf("archive entry %q has unsupported type %s", name, mode.Type())
 	}
 
@@ -183,6 +222,188 @@ func validateArchiveEntry(name string, mode fs.FileMode) (string, error) {
 		return "", fmt.Errorf("archive contains unsafe entry path %q", name)
 	}
 	return relativePath, nil
+}
+
+func readSymlinkTarget(ctx context.Context, file *sevenzip.File) (string, error) {
+	if file.UncompressedSize == 0 {
+		return "", fmt.Errorf("target must not be empty")
+	}
+	if file.UncompressedSize > maxSymlinkTargetSize {
+		return "", fmt.Errorf(
+			"target is %d bytes, exceeds the %d-byte limit",
+			file.UncompressedSize,
+			maxSymlinkTargetSize,
+		)
+	}
+
+	source, err := file.Open()
+	if err != nil {
+		return "", fmt.Errorf("open compressed target: %w", err)
+	}
+	contents, readErr := io.ReadAll(contextReader{ctx: ctx, reader: source})
+	closeErr := source.Close()
+	if readErr != nil {
+		return "", fmt.Errorf("read compressed target: %w", readErr)
+	}
+	if closeErr != nil {
+		return "", fmt.Errorf("close compressed target: %w", closeErr)
+	}
+	if uint64(len(contents)) != file.UncompressedSize {
+		return "", fmt.Errorf(
+			"target is %d bytes, expected %d",
+			len(contents),
+			file.UncompressedSize,
+		)
+	}
+	return validateSymlinkTarget(file.Name, string(contents))
+}
+
+func validateSymlinkTarget(entryName, target string) (string, error) {
+	if err := resolveSymlinkTarget(entryName, target, nil); err != nil {
+		return "", err
+	}
+	return filepath.FromSlash(target), nil
+}
+
+type symlinkTargetLookup func(string) (string, bool, error)
+
+func validateSymlinkTargets(root *os.Root, entries []extractionEntry) error {
+	archiveEntries := make(map[string]extractionEntry, len(entries))
+	for _, entry := range entries {
+		archiveEntries[filepath.ToSlash(entry.relativePath)] = entry
+	}
+
+	lookup := func(relativePath string) (string, bool, error) {
+		if entry, ok := archiveEntries[relativePath]; ok {
+			if isSymlink(entry.mode) {
+				return filepath.ToSlash(entry.linkTarget), true, nil
+			}
+			return "", false, nil
+		}
+		if root == nil {
+			return "", false, nil
+		}
+
+		path := filepath.FromSlash(relativePath)
+		info, err := root.Lstat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, fmt.Errorf("inspect symbolic link target component %q: %w", relativePath, err)
+		}
+		if info.Mode()&fs.ModeSymlink == 0 {
+			return "", false, nil
+		}
+		target, err := root.Readlink(path)
+		if err != nil {
+			return "", false, fmt.Errorf("read symbolic link target component %q: %w", relativePath, err)
+		}
+		return filepath.ToSlash(target), true, nil
+	}
+
+	for _, entry := range entries {
+		if !isSymlink(entry.mode) {
+			continue
+		}
+		entryName := filepath.ToSlash(entry.relativePath)
+		target := filepath.ToSlash(entry.linkTarget)
+		if err := resolveSymlinkTarget(entryName, target, lookup); err != nil {
+			return fmt.Errorf("archive symbolic link %q: %w", entryName, err)
+		}
+	}
+	return nil
+}
+
+func resolveSymlinkTarget(entryName, target string, lookup symlinkTargetLookup) error {
+	if err := validateSymlinkTargetSyntax(target); err != nil {
+		return err
+	}
+	resolved := splitSymlinkPath(path.Dir(entryName))
+	active := make(map[string]struct{})
+	if err := resolveSymlinkComponents(&resolved, splitSymlinkPath(target), lookup, active); err != nil {
+		if errors.Is(err, errSymlinkTargetEscapes) {
+			return fmt.Errorf("target %q escapes the extraction root after symbolic-link resolution", target)
+		}
+		return err
+	}
+	return nil
+}
+
+var errSymlinkTargetEscapes = errors.New("symbolic link target escapes extraction root")
+
+func resolveSymlinkComponents(
+	resolved *[]string,
+	components []string,
+	lookup symlinkTargetLookup,
+	active map[string]struct{},
+) error {
+	for _, component := range components {
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			if len(*resolved) == 0 {
+				return errSymlinkTargetEscapes
+			}
+			*resolved = (*resolved)[:len(*resolved)-1]
+			continue
+		}
+
+		candidate := path.Join(append(*resolved, component)...)
+		if lookup == nil {
+			*resolved = append(*resolved, component)
+			continue
+		}
+		target, isLink, err := lookup(candidate)
+		if err != nil {
+			return err
+		}
+		if !isLink {
+			*resolved = append(*resolved, component)
+			continue
+		}
+		if _, exists := active[candidate]; exists {
+			return fmt.Errorf("symbolic link cycle through %q", candidate)
+		}
+		if len(active) >= maxSymlinkDepth {
+			return fmt.Errorf("symbolic link resolution exceeds %d links", maxSymlinkDepth)
+		}
+		if err := validateSymlinkTargetSyntax(target); err != nil {
+			return fmt.Errorf("symbolic link %q has invalid target: %w", candidate, err)
+		}
+		active[candidate] = struct{}{}
+		err = resolveSymlinkComponents(resolved, splitSymlinkPath(target), lookup, active)
+		delete(active, candidate)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSymlinkTargetSyntax(target string) error {
+	if target == "" {
+		return fmt.Errorf("target must not be empty")
+	}
+	if !utf8.ValidString(target) {
+		return fmt.Errorf("target is not valid UTF-8")
+	}
+	if path.IsAbs(target) || strings.ContainsAny(target, "\\:\x00") {
+		return fmt.Errorf("target %q is unsafe", target)
+	}
+	return nil
+}
+
+func splitSymlinkPath(value string) []string {
+	if value == "." || value == "" {
+		return nil
+	}
+	return strings.Split(value, "/")
+}
+
+func isSymlink(mode fs.FileMode) bool {
+	return mode.Type() == fs.ModeSymlink
 }
 
 func preflightDestination(root *os.Root, entries []extractionEntry) error {
@@ -198,14 +419,59 @@ func preflightDestination(root *os.Root, entries []extractionEntry) error {
 			return fmt.Errorf("inspect archive destination %q: %w", entry.file.Name, err)
 		}
 		if info.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("archive destination %q is a symbolic link", entry.file.Name)
+			if !isSymlink(entry.mode) {
+				return fmt.Errorf("archive destination %q is a symbolic link", entry.file.Name)
+			}
+			target, err := root.Readlink(entry.relativePath)
+			if err != nil {
+				return fmt.Errorf("read archive destination symbolic link %q: %w", entry.file.Name, err)
+			}
+			if target != entry.linkTarget {
+				return fmt.Errorf(
+					"archive symbolic link %q conflicts with existing target %q",
+					entry.file.Name,
+					target,
+				)
+			}
+			continue
 		}
 		if entry.mode.IsDir() && !info.IsDir() {
 			return fmt.Errorf("archive directory %q conflicts with an existing file", entry.file.Name)
 		}
+		if isSymlink(entry.mode) {
+			return fmt.Errorf(
+				"archive symbolic link %q conflicts with existing mode %s",
+				entry.file.Name,
+				info.Mode(),
+			)
+		}
 		if !entry.mode.IsDir() && !info.Mode().IsRegular() {
 			return fmt.Errorf("archive file %q conflicts with existing mode %s", entry.file.Name, info.Mode())
 		}
+	}
+	return validateSymlinkTargets(root, entries)
+}
+
+func extractSymlink(root *os.Root, entry extractionEntry) error {
+	info, err := root.Lstat(entry.relativePath)
+	if errors.Is(err, fs.ErrNotExist) {
+		if err := root.Symlink(entry.linkTarget, entry.relativePath); err != nil {
+			return fmt.Errorf("create symbolic link: %w", err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect symbolic link destination: %w", err)
+	}
+	if info.Mode()&fs.ModeSymlink == 0 {
+		return fmt.Errorf("destination has mode %s", info.Mode())
+	}
+	target, err := root.Readlink(entry.relativePath)
+	if err != nil {
+		return fmt.Errorf("read existing symbolic link: %w", err)
+	}
+	if target != entry.linkTarget {
+		return fmt.Errorf("destination has target %q", target)
 	}
 	return nil
 }

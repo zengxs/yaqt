@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Updates>
+ <PackageUpdate>
+  <Name>qt.qt6.680.clang_64</Name>
+  <Version>6.8.0-0-202410030748</Version>
+  <DownloadableArchives>qtbase-MacOS-MacOS_14-Clang-MacOS-MacOS_14-X86_64-ARM64.7z</DownloadableArchives>
+ </PackageUpdate>
+</Updates>
