@@ -55,19 +55,13 @@ type installResolver interface {
 	ResolveInstall(context.Context, qtrepo.InstallRequest) (qtrepo.InstallPlan, error)
 }
 
-type archiveFetcher interface {
-	Fetch(context.Context, qtrepo.Archive) (string, error)
-}
+type archiveFetcher = qtinstall.ArchiveFetcher
 
-type archiveFetcherFactory func(string) (archiveFetcher, error)
+type archiveFetcherFactory = qtinstall.ArchiveFetcherFactory
 
-type archiveExtractor interface {
-	Extract(context.Context, string, string) error
-}
+type archiveExtractor = qtinstall.ArchiveExtractor
 
-type installRelocator interface {
-	Relocate(context.Context, string) error
-}
+type installRelocator = qtinstall.Relocator
 
 type installRelocatorFactory func(qtrepo.InstallPlan, string) (installRelocator, error)
 
@@ -170,9 +164,9 @@ func newInstallQtCommand(
 ) *cli.Command {
 	return &cli.Command{
 		Name:      "install-qt",
-		Usage:     "Install or materialize a Qt SDK installation",
+		Usage:     "Install or incrementally update a Qt SDK installation",
 		ArgsUsage: "VERSION",
-		Description: "Resolve and install native desktop, Android, or iOS Qt kits. " +
+		Description: "Resolve and incrementally install native desktop, Android, or iOS Qt kits. " +
 			"Mobile installation uses an existing matching desktop Qt. " +
 			"The command can also stop after planning, downloading, or extraction.",
 		Flags: []cli.Flag{
@@ -272,39 +266,45 @@ func newInstallQtCommand(
 				return err
 			}
 			if mode == installExecutionModeDryRun {
-				return printInstallPlan(output, plan)
-			}
-			var relocator installRelocator
-			if mode == installExecutionModeInstall {
-				relocator, err = dependencies.relocatorFactory(plan, installRoot)
+				reconciliation, err := reconcileInstallPlan(plan, installRoot)
 				if err != nil {
-					return fmt.Errorf("configure Qt post-install relocation: %w", err)
+					return fmt.Errorf("reconcile Qt installation: %w", err)
 				}
+				return printInstallPlan(output, plan, reconciliation)
 			}
-
-			cacheDir, err := qtinstall.ResolveCacheDir(command.String("cache-dir"))
+			kits, err := installKitRequests(plan)
 			if err != nil {
 				return err
 			}
-			if dependencies.fetcherFactory == nil {
-				return fmt.Errorf("archive downloader is not configured")
-			}
-			fetcher, err := dependencies.fetcherFactory(cacheDir)
+			materializationMode, err := qtinstallExecutionMode(mode)
 			if err != nil {
-				return fmt.Errorf("configure archive cache: %w", err)
+				return err
 			}
-			if mode != installExecutionModeDownloadOnly && dependencies.extractor == nil {
-				return fmt.Errorf("archive extractor is not configured")
+			var relocatorFactory qtinstall.RelocatorFactory
+			if dependencies.relocatorFactory != nil {
+				relocatorFactory = func() (qtinstall.Relocator, error) {
+					return dependencies.relocatorFactory(plan, installRoot)
+				}
 			}
-			return materializeInstallPlan(
+			installer := qtinstall.NewInstaller(
+				dependencies.fetcherFactory,
+				dependencies.extractor,
+				relocatorFactory,
+			)
+			return installer.Materialize(
 				ctx,
 				output,
-				plan,
-				cacheDir,
-				fetcher,
-				dependencies.extractor,
-				relocator,
-				mode,
+				qtinstall.MaterializeRequest{
+					Identity: qtinstall.InstallationIdentity{
+						Version: plan.Version,
+						Host:    plan.Host,
+						Target:  plan.Target,
+					},
+					Root:     installRoot,
+					CacheDir: command.String("cache-dir"),
+					Kits:     kits,
+					Mode:     materializationMode,
+				},
 			)
 		},
 	}
@@ -348,7 +348,11 @@ func repositoryFromCommand(command *cli.Command) (qtrepo.Repository, error) {
 	return qtrepo.NewRepository(command.String("base-url"), host, target)
 }
 
-func printInstallPlan(output io.Writer, plan qtrepo.InstallPlan) error {
+func printInstallPlan(
+	output io.Writer,
+	plan qtrepo.InstallPlan,
+	reconciliation qtinstall.Reconciliation,
+) error {
 	write := func(format string, arguments ...any) error {
 		_, err := fmt.Fprintf(output, format, arguments...)
 		return err
@@ -370,16 +374,22 @@ func printInstallPlan(output io.Writer, plan qtrepo.InstallPlan) error {
 	if err != nil {
 		return err
 	}
-	for _, kit := range kits {
+	for kitIndex, kit := range kits {
 		if err := write("\n%s -> %s\n", kit.architecture, kit.destination); err != nil {
 			return fmt.Errorf("write install plan: %w", err)
 		}
-		for _, packageSelection := range kit.packages {
+		for packageIndex, packageSelection := range kit.packages {
 			selection := "base package"
 			if packageSelection.Module != "" {
 				selection = "module " + packageSelection.Module
 			}
 			if err := write("  %s: %s\n", selection, packageSelection.Name); err != nil {
+				return fmt.Errorf("write install plan: %w", err)
+			}
+			if err := write(
+				"    action: %s\n",
+				reconciliation.Kits[kitIndex].Packages[packageIndex].Action,
+			); err != nil {
 				return fmt.Errorf("write install plan: %w", err)
 			}
 			for _, archive := range packageSelection.Archives {
@@ -403,95 +413,64 @@ func printInstallPlan(output io.Writer, plan qtrepo.InstallPlan) error {
 	if err := write("\nPost-install: %s.\n", targetHandler.postInstallDescription()); err != nil {
 		return fmt.Errorf("write install plan: %w", err)
 	}
+	if reconciliation.IsSatisfied() {
+		if err := write(
+			"Qt %s for %s is already satisfied.\n",
+			plan.Version,
+			plan.Target,
+		); err != nil {
+			return fmt.Errorf("write install plan: %w", err)
+		}
+	}
 	return nil
 }
 
-func materializeInstallPlan(
-	ctx context.Context,
-	output io.Writer,
+func reconcileInstallPlan(
 	plan qtrepo.InstallPlan,
-	cacheDir string,
-	fetcher archiveFetcher,
-	extractor archiveExtractor,
-	relocator installRelocator,
-	mode installExecutionMode,
-) error {
-	if fetcher == nil {
-		return fmt.Errorf("archive downloader is not configured")
+	installRoot string,
+) (qtinstall.Reconciliation, error) {
+	requestedKits, err := installKitRequests(plan)
+	if err != nil {
+		return qtinstall.Reconciliation{}, err
 	}
-	switch mode {
-	case installExecutionModeDownloadOnly:
-	case installExecutionModeExtractOnly, installExecutionModeInstall:
-		if extractor == nil {
-			return fmt.Errorf("archive extractor is not configured")
-		}
-		if mode == installExecutionModeInstall && relocator == nil {
-			return fmt.Errorf("Qt post-install relocator is not configured")
-		}
-	default:
-		return fmt.Errorf("unsupported installation execution mode %d", mode)
-	}
+	return qtinstall.ReconcileInstallation(
+		qtinstall.InstallationIdentity{
+			Version: plan.Version,
+			Host:    plan.Host,
+			Target:  plan.Target,
+		},
+		installRoot,
+		requestedKits,
+	)
+}
 
-	if _, err := fmt.Fprintf(output, "Cache: %s\n", cacheDir); err != nil {
-		return fmt.Errorf("write archive cache path: %w", err)
-	}
-	type cachedArchive struct {
-		archive qtrepo.Archive
-		path    string
-	}
-	cached := make([]cachedArchive, 0)
+func installKitRequests(plan qtrepo.InstallPlan) ([]qtinstall.KitRequest, error) {
 	kits, err := installPlanKits(plan)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	requestedKits := make([]qtinstall.KitRequest, 0, len(kits))
 	for _, kit := range kits {
-		for _, packageSelection := range kit.packages {
-			for _, archive := range packageSelection.Archives {
-				path, err := fetcher.Fetch(ctx, archive)
-				if err != nil {
-					return fmt.Errorf("cache archive %s: %w", archive.Name, err)
-				}
-				if _, err := fmt.Fprintf(output, "Cached %s: %s\n", archive.Name, path); err != nil {
-					return fmt.Errorf("write cached archive path: %w", err)
-				}
-				cached = append(cached, cachedArchive{archive: archive, path: path})
-			}
-		}
+		requestedKits = append(requestedKits, qtinstall.KitRequest{
+			Architecture: kit.architecture,
+			Destination:  kit.destination,
+			Packages:     kit.packages,
+		})
 	}
-	if mode == installExecutionModeDownloadOnly {
-		return nil
+	return requestedKits, nil
+}
+
+func qtinstallExecutionMode(mode installExecutionMode) (qtinstall.ExecutionMode, error) {
+	switch mode {
+	case installExecutionModeInstall:
+		return qtinstall.ExecutionModeInstall, nil
+	case installExecutionModeDownloadOnly:
+		return qtinstall.ExecutionModeDownloadOnly, nil
+	case installExecutionModeExtractOnly:
+		return qtinstall.ExecutionModeExtractOnly, nil
+	default:
+		return 0, fmt.Errorf("unsupported installation execution mode %d", mode)
 	}
-	for _, item := range cached {
-		if err := extractor.Extract(ctx, item.path, item.archive.ExtractTo); err != nil {
-			return fmt.Errorf("extract archive %s: %w", item.archive.Name, err)
-		}
-		if _, err := fmt.Fprintf(
-			output,
-			"Extracted %s to %s\n",
-			item.archive.Name,
-			item.archive.ExtractTo,
-		); err != nil {
-			return fmt.Errorf("write extracted archive path: %w", err)
-		}
-	}
-	if mode == installExecutionModeExtractOnly {
-		if _, err := fmt.Fprintln(output, "Path relocation has not been applied."); err != nil {
-			return fmt.Errorf("write extraction status: %w", err)
-		}
-		return nil
-	}
-	for _, kit := range kits {
-		if err := relocator.Relocate(ctx, kit.destination); err != nil {
-			return fmt.Errorf("relocate Qt kit %s: %w", kit.architecture, err)
-		}
-		if _, err := fmt.Fprintf(output, "Relocated %s kit: %s\n", kit.architecture, kit.destination); err != nil {
-			return fmt.Errorf("write relocated Qt kit path: %w", err)
-		}
-	}
-	if _, err := fmt.Fprintf(output, "Installed Qt %s for %s.\n", plan.Version, plan.Target); err != nil {
-		return fmt.Errorf("write installation status: %w", err)
-	}
-	return nil
 }
 
 type installPlanKit struct {

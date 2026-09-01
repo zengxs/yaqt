@@ -94,11 +94,25 @@ func NewMobileRelocator(
 	}, nil
 }
 
+// Validate checks every file required to relocate one mobile Qt kit without
+// publishing any replacements.
+func (relocator *MobileRelocator) Validate(ctx context.Context, kitDir string) error {
+	return relocator.processKit(ctx, kitDir, false)
+}
+
 // Relocate rewrites one extracted mobile Qt kit. Every affected file is
 // validated and staged before the first replacement is published.
 func (relocator *MobileRelocator) Relocate(
 	ctx context.Context,
 	kitDir string,
+) error {
+	return relocator.processKit(ctx, kitDir, true)
+}
+
+func (relocator *MobileRelocator) processKit(
+	ctx context.Context,
+	kitDir string,
+	apply bool,
 ) (resultErr error) {
 	targetName := "mobile"
 	if relocator != nil {
@@ -151,6 +165,9 @@ func (relocator *MobileRelocator) Relocate(
 		if changed {
 			updates = append(updates, update)
 		}
+	}
+	if !apply {
+		return nil
 	}
 
 	if err := applyRelocationFiles(ctx, root, updates); err != nil {

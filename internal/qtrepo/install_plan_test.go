@@ -68,6 +68,9 @@ func TestClientResolveAndroidInstallPlanForQt680(t *testing.T) {
 	if got, want := basePackage.Name, "qt.qt6.680.android_arm64_v8a"; got != want {
 		t.Errorf("base package name = %q, want %q", got, want)
 	}
+	if got, want := basePackage.PackageVersion, "6.8.0-0-202410030750"; got != want {
+		t.Errorf("base package version = %q, want %q", got, want)
+	}
 	if basePackage.Module != "" {
 		t.Errorf("base package module = %q, want empty", basePackage.Module)
 	}

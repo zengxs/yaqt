@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/zengxs/yaqt/internal/buildinfo"
 	"github.com/zengxs/yaqt/internal/qtrepo"
@@ -86,6 +88,126 @@ func TestArchiveStoreFetchesAndReusesVerifiedArchive(t *testing.T) {
 		t.Errorf("archive request count = %d, want %d", got, want)
 	}
 	assertNoPartialFiles(t, filepath.Dir(path))
+}
+
+func TestArchiveStoreSerializesConcurrentDownloadsOfTheSameDigest(t *testing.T) {
+	contents := []byte("concurrently requested Qt archive")
+	digest := sha256.Sum256(contents)
+	firstArchiveRequest := make(chan struct{})
+	releaseArchive := make(chan struct{})
+	var signalFirst sync.Once
+	var archiveRequests atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/archive.7z.sha256":
+			_, _ = fmt.Fprintf(writer, "%x\n", digest)
+		case "/archive.7z":
+			archiveRequests.Add(1)
+			signalFirst.Do(func() { close(firstArchiveRequest) })
+			<-releaseArchive
+			_, _ = writer.Write(contents)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	cacheDir := newTestCacheDir(t)
+	archive := qtrepo.Archive{
+		Name: "archive",
+		URL:  server.URL + "/archive.7z",
+		Checksum: qtrepo.Checksum{
+			Algorithm: qtrepo.ChecksumSHA256,
+			URL:       server.URL + "/archive.7z.sha256",
+		},
+	}
+	firstStore, err := NewArchiveStore(server.Client(), cacheDir)
+	if err != nil {
+		t.Fatalf("NewArchiveStore(first) error = %v", err)
+	}
+	secondStore, err := NewArchiveStore(server.Client(), cacheDir)
+	if err != nil {
+		t.Fatalf("NewArchiveStore(second) error = %v", err)
+	}
+	firstResult := make(chan error, 1)
+	secondResult := make(chan error, 1)
+	go func() {
+		_, err := firstStore.Fetch(context.Background(), archive)
+		firstResult <- err
+	}()
+	select {
+	case <-firstArchiveRequest:
+	case <-time.After(2 * time.Second):
+		close(releaseArchive)
+		t.Fatal("first archive download did not start")
+	}
+	go func() {
+		_, err := secondStore.Fetch(context.Background(), archive)
+		secondResult <- err
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	if got, want := archiveRequests.Load(), int32(1); got != want {
+		close(releaseArchive)
+		<-firstResult
+		<-secondResult
+		t.Fatalf("concurrent archive request count = %d, want %d", got, want)
+	}
+	close(releaseArchive)
+	if err := <-firstResult; err != nil {
+		t.Fatalf("first Fetch() error = %v", err)
+	}
+	if err := <-secondResult; err != nil {
+		t.Fatalf("second Fetch() error = %v", err)
+	}
+	if got, want := archiveRequests.Load(), int32(1); got != want {
+		t.Errorf("archive request count = %d, want %d", got, want)
+	}
+}
+
+func TestArchiveStoreRejectsCacheLockDirectorySymlinkEscape(t *testing.T) {
+	contents := []byte("Qt archive")
+	digest := sha256.Sum256(contents)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/archive.7z.sha256":
+			_, _ = fmt.Fprintf(writer, "%x\n", digest)
+		case "/archive.7z":
+			_, _ = writer.Write(contents)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	cacheDir := newTestCacheDir(t)
+	outsideDir := newTestCacheDir(t)
+	if err := os.Symlink(outsideDir, filepath.Join(cacheDir, "locks")); err != nil {
+		t.Skipf("create cache lock directory symlink: %v", err)
+	}
+	store, err := NewArchiveStore(server.Client(), cacheDir)
+	if err != nil {
+		t.Fatalf("NewArchiveStore() error = %v", err)
+	}
+	_, err = store.Fetch(context.Background(), qtrepo.Archive{
+		Name: "archive",
+		URL:  server.URL + "/archive.7z",
+		Checksum: qtrepo.Checksum{
+			Algorithm: qtrepo.ChecksumSHA256,
+			URL:       server.URL + "/archive.7z.sha256",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "escapes") {
+		t.Fatalf("Fetch() error = %v, want a cache path escape error", err)
+	}
+	entries, err := os.ReadDir(outsideDir)
+	if err != nil {
+		t.Fatalf("read outside cache directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("outside cache directory contains %d entries, want none", len(entries))
+	}
 }
 
 func TestArchiveStoreReplacesCorruptCachedArchive(t *testing.T) {

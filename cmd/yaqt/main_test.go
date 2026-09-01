@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
+
+	"github.com/urfave/cli/v3"
 
 	"github.com/zengxs/yaqt/internal/qtrepo"
 )
@@ -39,6 +44,17 @@ type stubArchiveExtractor struct {
 type stubInstallRelocator struct {
 	kitDirs []string
 	events  *[]string
+	failOn  string
+}
+
+type blockingArchiveFetcher struct {
+	destination string
+	entered     chan<- struct{}
+	release     <-chan struct{}
+}
+
+func (*stubInstallRelocator) Validate(context.Context, string) error {
+	return nil
 }
 
 func (stub *stubArchiveFetcher) Fetch(_ context.Context, archive qtrepo.Archive) (string, error) {
@@ -50,6 +66,22 @@ func (stub *stubArchiveFetcher) Fetch(_ context.Context, archive qtrepo.Archive)
 		return "", errors.New("download failed")
 	}
 	return filepath.Join(stub.destination, archive.Name+".7z"), nil
+}
+
+func (fetcher *blockingArchiveFetcher) Fetch(
+	ctx context.Context,
+	archive qtrepo.Archive,
+) (string, error) {
+	select {
+	case fetcher.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-fetcher.release:
+		return filepath.Join(fetcher.destination, archive.Name+".7z"), nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
 func (stub *stubArchiveExtractor) Extract(_ context.Context, archivePath, destination string) error {
@@ -67,6 +99,9 @@ func (stub *stubInstallRelocator) Relocate(_ context.Context, kitDir string) err
 	stub.kitDirs = append(stub.kitDirs, kitDir)
 	if stub.events != nil {
 		*stub.events = append(*stub.events, "relocate "+filepath.Base(kitDir))
+	}
+	if filepath.Base(kitDir) == stub.failOn {
+		return errors.New("relocation failed")
 	}
 	return nil
 }
@@ -90,6 +125,24 @@ func (stub *stubRepositoryClient) ResolveInstall(
 ) (qtrepo.InstallPlan, error) {
 	stub.installRequest = request
 	return stub.installPlan, nil
+}
+
+func cleanInstallTestRoot(t *testing.T, name string) string {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("..", "..", ".tmp", "install-tests", name))
+	if err != nil {
+		t.Fatalf("filepath.Abs() error = %v", err)
+	}
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatalf("remove previous test root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove test root: %v", err)
+		}
+		_ = os.Remove(filepath.Dir(root))
+	})
+	return root
 }
 
 func TestListQtCommand(t *testing.T) {
@@ -161,7 +214,8 @@ func TestInstallQtDryRun(t *testing.T) {
 					Destination: "/opt/Qt/6.8.0/android_arm64_v8a",
 					Packages: []qtrepo.PackageSelection{
 						{
-							Name: "qt.qt6.680.android_arm64_v8a",
+							Name:           "qt.qt6.680.android_arm64_v8a",
+							PackageVersion: "6.8.0-0-test",
 							Archives: []qtrepo.Archive{
 								{
 									Name: "qtbase",
@@ -175,8 +229,9 @@ func TestInstallQtDryRun(t *testing.T) {
 							},
 						},
 						{
-							Name:   "qt.qt6.680.addons.qtmultimedia.android_arm64_v8a",
-							Module: "qtmultimedia",
+							Name:           "qt.qt6.680.addons.qtmultimedia.android_arm64_v8a",
+							PackageVersion: "6.8.0-0-test",
+							Module:         "qtmultimedia",
 							Archives: []qtrepo.Archive{
 								{
 									Name: "qtmultimedia",
@@ -268,7 +323,8 @@ func TestInstallQtDesktopDryRunUsesNativeArchitecture(t *testing.T) {
 				Destination:  kitDir,
 				Packages: []qtrepo.PackageSelection{
 					{
-						Name: "qt.qt6.6112.clang_64",
+						Name:           "qt.qt6.6112.clang_64",
+						PackageVersion: "6.11.2-0-test",
 						Archives: []qtrepo.Archive{
 							{
 								Name:      "qtbase",
@@ -348,7 +404,8 @@ func TestInstallQtIOSDryRun(t *testing.T) {
 				Destination: kitDir,
 				Packages: []qtrepo.PackageSelection{
 					{
-						Name: "qt.qt6.6112.ios",
+						Name:           "qt.qt6.6112.ios",
+						PackageVersion: "6.11.2-0-test",
 						Archives: []qtrepo.Archive{
 							{
 								Name:      "qtbase",
@@ -673,10 +730,7 @@ func TestInstallQtExtractOnlyDownloadsEveryArchiveBeforeExtraction(t *testing.T)
 func TestInstallQtCompleteDownloadsExtractsAndRelocates(t *testing.T) {
 	events := make([]string, 0)
 	output := &bytes.Buffer{}
-	qtRoot, err := filepath.Abs(filepath.Join(".tmp", "Qt"))
-	if err != nil {
-		t.Fatalf("filepath.Abs() error = %v", err)
-	}
+	qtRoot := cleanInstallTestRoot(t, "android-complete")
 	kitDir := filepath.Join(qtRoot, "6.8.0", "android_arm64_v8a")
 	archive := qtrepo.Archive{
 		Name:      "qtbase",
@@ -696,13 +750,17 @@ func TestInstallQtCompleteDownloadsExtractsAndRelocates(t *testing.T) {
 					ABI:         qtrepo.AndroidABIArm64V8A,
 					Destination: kitDir,
 					Packages: []qtrepo.PackageSelection{
-						{Archives: []qtrepo.Archive{archive}},
+						{
+							Name:           "qt.qt6.680.android_arm64_v8a",
+							PackageVersion: "6.8.0-0-test",
+							Archives:       []qtrepo.Archive{archive},
+						},
 					},
 				},
 			},
 		},
 	}
-	cacheDir := filepath.Join(".tmp", "cache")
+	cacheDir := filepath.Join(qtRoot, "cache")
 	fetcher := &stubArchiveFetcher{
 		destination: filepath.Join(cacheDir, "downloads"),
 		events:      &events,
@@ -736,7 +794,7 @@ func TestInstallQtCompleteDownloadsExtractsAndRelocates(t *testing.T) {
 		&bytes.Buffer{},
 	)
 
-	err = command.Run(context.Background(), []string{
+	err := command.Run(context.Background(), []string{
 		"yaqt",
 		"install-qt",
 		"6.8.0",
@@ -785,10 +843,7 @@ func TestInstallQtCompleteDownloadsExtractsAndRelocates(t *testing.T) {
 func TestInstallQtDesktopCompleteDownloadsExtractsAndRelocates(t *testing.T) {
 	events := make([]string, 0)
 	output := &bytes.Buffer{}
-	qtRoot, err := filepath.Abs(filepath.Join(".tmp", "desktop-complete-root"))
-	if err != nil {
-		t.Fatalf("filepath.Abs() error = %v", err)
-	}
+	qtRoot := cleanInstallTestRoot(t, "desktop-complete")
 	kitDir := filepath.Join(qtRoot, "6.11.2", "macos")
 	archive := qtrepo.Archive{Name: "qtbase", ExtractTo: kitDir}
 	client := &stubRepositoryClient{
@@ -800,12 +855,16 @@ func TestInstallQtDesktopCompleteDownloadsExtractsAndRelocates(t *testing.T) {
 				Architecture: qtrepo.DesktopArchitectureMacClang64,
 				Destination:  kitDir,
 				Packages: []qtrepo.PackageSelection{
-					{Archives: []qtrepo.Archive{archive}},
+					{
+						Name:           "qt.qt6.6112.clang_64",
+						PackageVersion: "6.11.2-0-test",
+						Archives:       []qtrepo.Archive{archive},
+					},
 				},
 			},
 		},
 	}
-	cacheDir := filepath.Join(".tmp", "desktop-complete-cache")
+	cacheDir := filepath.Join(qtRoot, "cache")
 	fetcher := &stubArchiveFetcher{
 		destination: filepath.Join(cacheDir, "downloads"),
 		events:      &events,
@@ -835,7 +894,7 @@ func TestInstallQtDesktopCompleteDownloadsExtractsAndRelocates(t *testing.T) {
 		&bytes.Buffer{},
 	)
 
-	err = command.Run(context.Background(), []string{
+	err := command.Run(context.Background(), []string{
 		"yaqt",
 		"install-qt",
 		"6.11.2",
@@ -869,6 +928,639 @@ func TestInstallQtDesktopCompleteDownloadsExtractsAndRelocates(t *testing.T) {
 		if !bytes.Contains(output.Bytes(), []byte(want)) {
 			t.Errorf("output does not contain %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestInstallQtRepeatingSatisfiedInstallationSkipsWork(t *testing.T) {
+	qtRoot := cleanInstallTestRoot(t, "repeat-satisfied")
+	kitDir := filepath.Join(qtRoot, "6.11.2", "macos")
+	archive := qtrepo.Archive{Name: "qtbase", ExtractTo: kitDir}
+	client := &stubRepositoryClient{
+		installPlan: qtrepo.InstallPlan{
+			Version: qtrepo.Version{Major: 6, Minor: 11, Patch: 2},
+			Host:    qtrepo.HostMac,
+			Target:  qtrepo.TargetDesktop,
+			DesktopKit: &qtrepo.DesktopKit{
+				Architecture: qtrepo.DesktopArchitectureMacClang64,
+				Destination:  kitDir,
+				Packages: []qtrepo.PackageSelection{{
+					Name:           "qt.qt6.6112.clang_64",
+					PackageVersion: "6.11.2-0-202608131016",
+					Archives:       []qtrepo.Archive{archive},
+				}},
+			},
+		},
+	}
+	events := make([]string, 0)
+	cacheDir := filepath.Join(qtRoot, "cache")
+	dependencies := commandDependencies{
+		install: installCommandDependencies{
+			resolver: client,
+			fetcherFactory: archiveFetcherFactory(func(string) (archiveFetcher, error) {
+				return &stubArchiveFetcher{destination: cacheDir, events: &events}, nil
+			}),
+			extractor: &stubArchiveExtractor{events: &events},
+			relocatorFactory: installRelocatorFactory(func(
+				qtrepo.InstallPlan,
+				string,
+			) (installRelocator, error) {
+				return &stubInstallRelocator{events: &events}, nil
+			}),
+		},
+	}
+	arguments := []string{
+		"yaqt", "install-qt", "6.11.2",
+		"--target", "desktop",
+		"--root", qtRoot,
+		"--cache-dir", cacheDir,
+	}
+
+	firstOutput := &bytes.Buffer{}
+	if err := newCommand(
+		dependencies,
+		qtrepo.HostMac,
+		firstOutput,
+		&bytes.Buffer{},
+	).Run(context.Background(), arguments); err != nil {
+		t.Fatalf("first command.Run() error = %v", err)
+	}
+	if got, want := len(events), 3; got != want {
+		t.Fatalf("first installation event count = %d, want %d: %v", got, want, events)
+	}
+
+	secondOutput := &bytes.Buffer{}
+	if err := newCommand(
+		dependencies,
+		qtrepo.HostMac,
+		secondOutput,
+		&bytes.Buffer{},
+	).Run(context.Background(), arguments); err != nil {
+		t.Fatalf("second command.Run() error = %v", err)
+	}
+	if got, want := len(events), 3; got != want {
+		t.Errorf("event count after repeated installation = %d, want %d: %v", got, want, events)
+	}
+	if got := secondOutput.String(); !bytes.Contains(
+		[]byte(got),
+		[]byte("Qt 6.11.2 for desktop is already satisfied."),
+	) {
+		t.Errorf("second output does not report a satisfied installation:\n%s", got)
+	}
+
+	dryRunOutput := &bytes.Buffer{}
+	dryRunArguments := append(append([]string(nil), arguments...), "--dry-run")
+	if err := newCommand(
+		dependencies,
+		qtrepo.HostMac,
+		dryRunOutput,
+		&bytes.Buffer{},
+	).Run(context.Background(), dryRunArguments); err != nil {
+		t.Fatalf("dry-run command.Run() error = %v", err)
+	}
+	if got := dryRunOutput.String(); !bytes.Contains(
+		[]byte(got),
+		[]byte("Qt 6.11.2 for desktop is already satisfied."),
+	) {
+		t.Errorf("dry-run output does not report a satisfied installation:\n%s", got)
+	}
+	if got, want := len(events), 3; got != want {
+		t.Errorf("event count after satisfied dry run = %d, want %d: %v", got, want, events)
+	}
+}
+
+func TestInstallQtAdoptsLegacyBaseBeforeAddingModule(t *testing.T) {
+	qtRoot := cleanInstallTestRoot(t, "adopt-legacy-base")
+	kitDir := filepath.Join(qtRoot, "6.11.2", "macos")
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatalf("create legacy kit: %v", err)
+	}
+	baseArchive := qtrepo.Archive{Name: "qtbase", ExtractTo: kitDir}
+	moduleArchive := qtrepo.Archive{Name: "qtmultimedia", ExtractTo: kitDir}
+	client := &stubRepositoryClient{
+		installPlan: qtrepo.InstallPlan{
+			Version: qtrepo.Version{Major: 6, Minor: 11, Patch: 2},
+			Host:    qtrepo.HostMac,
+			Target:  qtrepo.TargetDesktop,
+			DesktopKit: &qtrepo.DesktopKit{
+				Architecture: qtrepo.DesktopArchitectureMacClang64,
+				Destination:  kitDir,
+				Packages: []qtrepo.PackageSelection{
+					{
+						Name:           "qt.qt6.6112.clang_64",
+						PackageVersion: "6.11.2-0-202608131016",
+						Archives:       []qtrepo.Archive{baseArchive},
+					},
+					{
+						Name:           "qt.qt6.6112.addons.qtmultimedia.clang_64",
+						PackageVersion: "6.11.2-0-202608131016",
+						Module:         "qtmultimedia",
+						Archives:       []qtrepo.Archive{moduleArchive},
+					},
+				},
+			},
+		},
+	}
+	events := make([]string, 0)
+	cacheDir := filepath.Join(qtRoot, "cache")
+	command := newCommand(
+		commandDependencies{
+			install: installCommandDependencies{
+				resolver: client,
+				fetcherFactory: archiveFetcherFactory(func(string) (archiveFetcher, error) {
+					return &stubArchiveFetcher{destination: cacheDir, events: &events}, nil
+				}),
+				extractor: &stubArchiveExtractor{events: &events},
+				relocatorFactory: installRelocatorFactory(func(
+					qtrepo.InstallPlan,
+					string,
+				) (installRelocator, error) {
+					return &stubInstallRelocator{events: &events}, nil
+				}),
+			},
+		},
+		qtrepo.HostMac,
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	)
+
+	if err := command.Run(context.Background(), []string{
+		"yaqt", "install-qt", "6.11.2",
+		"--target", "desktop",
+		"--root", qtRoot,
+		"--cache-dir", cacheDir,
+		"--module", "qtmultimedia",
+	}); err != nil {
+		t.Fatalf("command.Run() error = %v", err)
+	}
+	wantEvents := []string{
+		"fetch qtmultimedia",
+		"extract qtmultimedia.7z",
+		"relocate macos",
+	}
+	if got := events; !slices.Equal(got, wantEvents) {
+		t.Errorf("installation events = %v, want %v", got, wantEvents)
+	}
+}
+
+func TestInstallQtDryRunReportsIncrementalPackageActions(t *testing.T) {
+	qtRoot := cleanInstallTestRoot(t, "dry-run-actions")
+	kitDir := filepath.Join(qtRoot, "6.11.2", "macos")
+	basePackage := qtrepo.PackageSelection{
+		Name:           "qt.qt6.6112.clang_64",
+		PackageVersion: "6.11.2-0-202608131016",
+		Archives: []qtrepo.Archive{{
+			Name:      "qtbase",
+			ExtractTo: kitDir,
+		}},
+	}
+	client := &stubRepositoryClient{
+		installPlan: qtrepo.InstallPlan{
+			Version: qtrepo.Version{Major: 6, Minor: 11, Patch: 2},
+			Host:    qtrepo.HostMac,
+			Target:  qtrepo.TargetDesktop,
+			DesktopKit: &qtrepo.DesktopKit{
+				Architecture: qtrepo.DesktopArchitectureMacClang64,
+				Destination:  kitDir,
+				Packages:     []qtrepo.PackageSelection{basePackage},
+			},
+		},
+	}
+	events := make([]string, 0)
+	cacheDir := filepath.Join(qtRoot, "cache")
+	installDependencies := installCommandDependencies{
+		resolver: client,
+		fetcherFactory: archiveFetcherFactory(func(string) (archiveFetcher, error) {
+			return &stubArchiveFetcher{destination: cacheDir, events: &events}, nil
+		}),
+		extractor: &stubArchiveExtractor{events: &events},
+		relocatorFactory: installRelocatorFactory(func(
+			qtrepo.InstallPlan,
+			string,
+		) (installRelocator, error) {
+			return &stubInstallRelocator{events: &events}, nil
+		}),
+	}
+	if err := newCommand(
+		commandDependencies{install: installDependencies},
+		qtrepo.HostMac,
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	).Run(context.Background(), []string{
+		"yaqt", "install-qt", "6.11.2",
+		"--target", "desktop",
+		"--root", qtRoot,
+		"--cache-dir", cacheDir,
+	}); err != nil {
+		t.Fatalf("initial command.Run() error = %v", err)
+	}
+
+	client.installPlan.DesktopKit.Packages = append(
+		client.installPlan.DesktopKit.Packages,
+		qtrepo.PackageSelection{
+			Name:           "qt.qt6.6112.addons.qtmultimedia.clang_64",
+			PackageVersion: "6.11.2-0-202608131016",
+			Module:         "qtmultimedia",
+			Archives: []qtrepo.Archive{{
+				Name:      "qtmultimedia",
+				ExtractTo: kitDir,
+			}},
+		},
+	)
+	dryRunOutput := &bytes.Buffer{}
+	if err := newCommand(
+		commandDependencies{install: installDependencies},
+		qtrepo.HostMac,
+		dryRunOutput,
+		&bytes.Buffer{},
+	).Run(context.Background(), []string{
+		"yaqt", "install-qt", "6.11.2",
+		"--target", "desktop",
+		"--root", qtRoot,
+		"--module", "qtmultimedia",
+		"--dry-run",
+	}); err != nil {
+		t.Fatalf("dry-run command.Run() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"base package: qt.qt6.6112.clang_64\n    action: skip",
+		"module qtmultimedia: qt.qt6.6112.addons.qtmultimedia.clang_64\n    action: install",
+	} {
+		if !bytes.Contains(dryRunOutput.Bytes(), []byte(want)) {
+			t.Errorf("dry-run output does not contain %q:\n%s", want, dryRunOutput)
+		}
+	}
+	if got, want := len(events), 3; got != want {
+		t.Errorf("event count after dry run = %d, want %d: %v", got, want, events)
+	}
+
+	client.installPlan.DesktopKit.Packages[0].PackageVersion = "6.11.2-1-updated"
+	updateOutput := &bytes.Buffer{}
+	if err := newCommand(
+		commandDependencies{install: installDependencies},
+		qtrepo.HostMac,
+		updateOutput,
+		&bytes.Buffer{},
+	).Run(context.Background(), []string{
+		"yaqt", "install-qt", "6.11.2",
+		"--target", "desktop",
+		"--root", qtRoot,
+		"--dry-run",
+	}); err != nil {
+		t.Fatalf("update dry-run command.Run() error = %v", err)
+	}
+	if !bytes.Contains(
+		updateOutput.Bytes(),
+		[]byte("base package: qt.qt6.6112.clang_64\n    action: update"),
+	) {
+		t.Errorf("update dry-run output does not report the changed base package:\n%s", updateOutput)
+	}
+}
+
+func TestInstallQtSerializesDifferentKitsOfTheSameVersion(t *testing.T) {
+	qtRoot := cleanInstallTestRoot(t, "same-version-lock")
+	version := qtrepo.Version{Major: 6, Minor: 11, Patch: 2}
+	firstRelease := make(chan struct{})
+	secondRelease := make(chan struct{})
+	firstEntered := make(chan struct{}, 1)
+	secondEntered := make(chan struct{}, 1)
+
+	newInstallCommand := func(
+		plan qtrepo.InstallPlan,
+		fetcher archiveFetcher,
+		output *bytes.Buffer,
+	) *cli.Command {
+		return newCommand(
+			commandDependencies{
+				install: installCommandDependencies{
+					resolver: &stubRepositoryClient{installPlan: plan},
+					fetcherFactory: archiveFetcherFactory(func(string) (archiveFetcher, error) {
+						return fetcher, nil
+					}),
+					extractor: &stubArchiveExtractor{},
+					relocatorFactory: installRelocatorFactory(func(
+						qtrepo.InstallPlan,
+						string,
+					) (installRelocator, error) {
+						return &stubInstallRelocator{}, nil
+					}),
+				},
+			},
+			qtrepo.HostMac,
+			output,
+			&bytes.Buffer{},
+		)
+	}
+
+	desktopKitDir := filepath.Join(qtRoot, version.String(), "macos")
+	desktopPlan := qtrepo.InstallPlan{
+		Version: version,
+		Host:    qtrepo.HostMac,
+		Target:  qtrepo.TargetDesktop,
+		DesktopKit: &qtrepo.DesktopKit{
+			Architecture: qtrepo.DesktopArchitectureMacClang64,
+			Destination:  desktopKitDir,
+			Packages: []qtrepo.PackageSelection{{
+				Name:           "qt.qt6.6112.clang_64",
+				PackageVersion: "6.11.2-0-test",
+				Archives: []qtrepo.Archive{{
+					Name:      "qtbase",
+					ExtractTo: desktopKitDir,
+				}},
+			}},
+		},
+	}
+	iosKitDir := filepath.Join(qtRoot, version.String(), "ios")
+	iosPlan := qtrepo.InstallPlan{
+		Version: version,
+		Host:    qtrepo.HostMac,
+		Target:  qtrepo.TargetIOS,
+		HostQt: &qtrepo.QtInstallationIdentity{
+			Host:    qtrepo.HostMac,
+			Version: version,
+		},
+		IOSKit: &qtrepo.IOSKit{
+			Destination: iosKitDir,
+			Packages: []qtrepo.PackageSelection{{
+				Name:           "qt.qt6.6112.ios",
+				PackageVersion: "6.11.2-0-test",
+				Archives: []qtrepo.Archive{{
+					Name:      "qtbase",
+					ExtractTo: iosKitDir,
+				}},
+			}},
+		},
+	}
+
+	firstOutput := &bytes.Buffer{}
+	secondOutput := &bytes.Buffer{}
+	firstCommand := newInstallCommand(desktopPlan, &blockingArchiveFetcher{
+		destination: filepath.Join(qtRoot, "first-cache"),
+		entered:     firstEntered,
+		release:     firstRelease,
+	}, firstOutput)
+	secondCommand := newInstallCommand(iosPlan, &blockingArchiveFetcher{
+		destination: filepath.Join(qtRoot, "second-cache"),
+		entered:     secondEntered,
+		release:     secondRelease,
+	}, secondOutput)
+	firstResult := make(chan error, 1)
+	secondResult := make(chan error, 1)
+	go func() {
+		firstResult <- firstCommand.Run(context.Background(), []string{
+			"yaqt", "install-qt", version.String(),
+			"--target", "desktop",
+			"--root", qtRoot,
+		})
+	}()
+	select {
+	case <-firstEntered:
+	case <-time.After(2 * time.Second):
+		close(firstRelease)
+		t.Fatal("first installation did not start downloading")
+	}
+
+	go func() {
+		secondResult <- secondCommand.Run(context.Background(), []string{
+			"yaqt", "install-qt", version.String(),
+			"--target", "ios",
+			"--root", qtRoot,
+		})
+	}()
+	select {
+	case <-secondEntered:
+		close(firstRelease)
+		close(secondRelease)
+		<-firstResult
+		<-secondResult
+		t.Fatal("second kit started downloading while the same Qt version was being installed")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(firstRelease)
+	if err := <-firstResult; err != nil {
+		close(secondRelease)
+		<-secondResult
+		t.Fatalf("first command.Run() error = %v", err)
+	}
+	select {
+	case <-secondEntered:
+	case <-time.After(2 * time.Second):
+		close(secondRelease)
+		<-secondResult
+		t.Fatal("second installation did not resume after the first released the version lock")
+	}
+	close(secondRelease)
+	if err := <-secondResult; err != nil {
+		t.Fatalf("second command.Run() error = %v", err)
+	}
+	if !bytes.Contains(
+		secondOutput.Bytes(),
+		[]byte("Waiting for another installation of Qt 6.11.2 to finish."),
+	) {
+		t.Errorf("second output does not report the version lock wait:\n%s", secondOutput)
+	}
+}
+
+func TestInstallQtPublishesManifestsOnlyAfterAllKitsRelocate(t *testing.T) {
+	qtRoot := cleanInstallTestRoot(t, "publish-manifests-after-relocation")
+	version := qtrepo.Version{Major: 6, Minor: 11, Patch: 2}
+	armKitDir := filepath.Join(qtRoot, version.String(), "android_arm64_v8a")
+	x86KitDir := filepath.Join(qtRoot, version.String(), "android_x86_64")
+	plan := qtrepo.InstallPlan{
+		Version: version,
+		Host:    qtrepo.HostMac,
+		Target:  qtrepo.TargetAndroid,
+		AndroidKits: []qtrepo.AndroidKit{
+			{
+				ABI:         qtrepo.AndroidABIArm64V8A,
+				Destination: armKitDir,
+				Packages: []qtrepo.PackageSelection{{
+					Name:           "qt.qt6.6112.android_arm64_v8a",
+					PackageVersion: "6.11.2-0-test",
+					Archives: []qtrepo.Archive{{
+						Name:      "qtbase-arm64",
+						ExtractTo: armKitDir,
+					}},
+				}},
+			},
+			{
+				ABI:         qtrepo.AndroidABIX8664,
+				Destination: x86KitDir,
+				Packages: []qtrepo.PackageSelection{{
+					Name:           "qt.qt6.6112.android_x86_64",
+					PackageVersion: "6.11.2-0-test",
+					Archives: []qtrepo.Archive{{
+						Name:      "qtbase-x86_64",
+						ExtractTo: x86KitDir,
+					}},
+				}},
+			},
+		},
+	}
+	events := make([]string, 0)
+	cacheDir := filepath.Join(qtRoot, "cache")
+	command := newCommand(
+		commandDependencies{
+			install: installCommandDependencies{
+				resolver: &stubRepositoryClient{installPlan: plan},
+				fetcherFactory: archiveFetcherFactory(func(string) (archiveFetcher, error) {
+					return &stubArchiveFetcher{destination: cacheDir, events: &events}, nil
+				}),
+				extractor: &stubArchiveExtractor{events: &events},
+				relocatorFactory: installRelocatorFactory(func(
+					qtrepo.InstallPlan,
+					string,
+				) (installRelocator, error) {
+					return &stubInstallRelocator{
+						events: &events,
+						failOn: filepath.Base(x86KitDir),
+					}, nil
+				}),
+			},
+		},
+		qtrepo.HostMac,
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	)
+
+	err := command.Run(context.Background(), []string{
+		"yaqt", "install-qt", version.String(),
+		"--target", "android",
+		"--root", qtRoot,
+		"--cache-dir", cacheDir,
+		"--abi", "arm64-v8a",
+		"--abi", "x86_64",
+	})
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("relocation failed")) {
+		t.Fatalf("command.Run() error = %v, want relocation failure", err)
+	}
+	if _, err := os.Stat(filepath.Join(armKitDir, ".yaqt", "manifest.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("first kit manifest Stat() error = %v, want no manifest", err)
+	}
+}
+
+func TestInstallQtRejectsKitStateDirectorySymlinkEscape(t *testing.T) {
+	qtRoot := cleanInstallTestRoot(t, "state-directory-symlink")
+	kitDir := filepath.Join(qtRoot, "6.11.2", "macos")
+	outsideStateDir := filepath.Join(qtRoot, "outside-state")
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatalf("create legacy kit: %v", err)
+	}
+	if err := os.MkdirAll(outsideStateDir, 0o755); err != nil {
+		t.Fatalf("create outside state directory: %v", err)
+	}
+	if err := os.Symlink(outsideStateDir, filepath.Join(kitDir, ".yaqt")); err != nil {
+		t.Skipf("create state directory symlink: %v", err)
+	}
+
+	client := &stubRepositoryClient{
+		installPlan: qtrepo.InstallPlan{
+			Version: qtrepo.Version{Major: 6, Minor: 11, Patch: 2},
+			Host:    qtrepo.HostMac,
+			Target:  qtrepo.TargetDesktop,
+			DesktopKit: &qtrepo.DesktopKit{
+				Architecture: qtrepo.DesktopArchitectureMacClang64,
+				Destination:  kitDir,
+				Packages: []qtrepo.PackageSelection{{
+					Name:           "qt.qt6.6112.clang_64",
+					PackageVersion: "6.11.2-0-test",
+					Archives: []qtrepo.Archive{{
+						Name:      "qtbase",
+						ExtractTo: kitDir,
+					}},
+				}},
+			},
+		},
+	}
+	command := newCommand(
+		commandDependencies{
+			install: installCommandDependencies{
+				resolver: client,
+				relocatorFactory: installRelocatorFactory(func(
+					qtrepo.InstallPlan,
+					string,
+				) (installRelocator, error) {
+					return &stubInstallRelocator{}, nil
+				}),
+			},
+		},
+		qtrepo.HostMac,
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	)
+	err := command.Run(context.Background(), []string{
+		"yaqt", "install-qt", "6.11.2",
+		"--target", "desktop",
+		"--root", qtRoot,
+	})
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("escapes")) {
+		t.Fatalf("command.Run() error = %v, want a state directory escape error", err)
+	}
+	if _, err := os.Stat(filepath.Join(outsideStateDir, "manifest.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("outside manifest Stat() error = %v, want no manifest", err)
+	}
+}
+
+func TestInstallQtRejectsVersionDirectorySymlinkEscape(t *testing.T) {
+	qtRoot := cleanInstallTestRoot(t, "version-directory-symlink")
+	outsideRoot := cleanInstallTestRoot(t, "version-directory-symlink-outside")
+	if err := os.MkdirAll(qtRoot, 0o755); err != nil {
+		t.Fatalf("create Qt root: %v", err)
+	}
+	if err := os.MkdirAll(outsideRoot, 0o755); err != nil {
+		t.Fatalf("create outside root: %v", err)
+	}
+	if err := os.Symlink(outsideRoot, filepath.Join(qtRoot, "6.11.2")); err != nil {
+		t.Skipf("create version directory symlink: %v", err)
+	}
+	kitDir := filepath.Join(qtRoot, "6.11.2", "macos")
+	client := &stubRepositoryClient{
+		installPlan: qtrepo.InstallPlan{
+			Version: qtrepo.Version{Major: 6, Minor: 11, Patch: 2},
+			Host:    qtrepo.HostMac,
+			Target:  qtrepo.TargetDesktop,
+			DesktopKit: &qtrepo.DesktopKit{
+				Architecture: qtrepo.DesktopArchitectureMacClang64,
+				Destination:  kitDir,
+				Packages: []qtrepo.PackageSelection{{
+					Name:           "qt.qt6.6112.clang_64",
+					PackageVersion: "6.11.2-0-test",
+					Archives: []qtrepo.Archive{{
+						Name:      "qtbase",
+						ExtractTo: kitDir,
+					}},
+				}},
+			},
+		},
+	}
+	command := newCommand(
+		commandDependencies{
+			install: installCommandDependencies{
+				resolver: client,
+				relocatorFactory: installRelocatorFactory(func(
+					qtrepo.InstallPlan,
+					string,
+				) (installRelocator, error) {
+					return &stubInstallRelocator{}, nil
+				}),
+			},
+		},
+		qtrepo.HostMac,
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	)
+
+	err := command.Run(context.Background(), []string{
+		"yaqt", "install-qt", "6.11.2",
+		"--target", "desktop",
+		"--root", qtRoot,
+	})
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("escapes")) {
+		t.Fatalf("command.Run() error = %v, want a state path escape error", err)
+	}
+	if _, err := os.Stat(filepath.Join(outsideRoot, ".yaqt", "install.lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("outside lock Stat() error = %v, want no lock", err)
 	}
 }
 

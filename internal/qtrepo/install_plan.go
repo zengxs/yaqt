@@ -59,9 +59,10 @@ type IOSKit struct {
 // PackageSelection records why a repository package was selected and its artifacts.
 // Module is empty for the base package.
 type PackageSelection struct {
-	Name     string
-	Module   string
-	Archives []Archive
+	Name           string
+	PackageVersion string
+	Module         string
+	Archives       []Archive
 }
 
 // ChecksumAlgorithm identifies a supported archive checksum algorithm.
@@ -334,9 +335,10 @@ func resolvePackageSelections(
 			return nil, fmt.Errorf("Qt package %q contains no downloadable archives", selection.update.Name)
 		}
 		packageSelections = append(packageSelections, PackageSelection{
-			Name:     strings.TrimSpace(selection.update.Name),
-			Module:   selection.module,
-			Archives: resolved,
+			Name:           strings.TrimSpace(selection.update.Name),
+			PackageVersion: strings.TrimSpace(selection.update.Version),
+			Module:         selection.module,
+			Archives:       resolved,
 		})
 	}
 	return packageSelections, nil

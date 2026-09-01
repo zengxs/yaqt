@@ -70,21 +70,65 @@ func (store *ArchiveStore) Fetch(ctx context.Context, archive qtrepo.Archive) (s
 
 	downloadDir := filepath.Join(store.cacheDir, "downloads", string(policy.algorithm))
 	finalPath := filepath.Join(downloadDir, expected+".7z")
-	valid, err := archiveMatchesChecksum(finalPath, expected, policy)
+	cacheRoot, _, err := openManagedPathRoot(store.cacheDir, true)
 	if err != nil {
-		return "", fmt.Errorf("verify cached archive %s: %w", finalPath, err)
+		return "", fmt.Errorf("open archive cache root %s: %w", store.cacheDir, err)
 	}
-	if valid {
-		return finalPath, nil
-	}
-	if err := os.Remove(finalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("remove invalid cached archive %s: %w", finalPath, err)
-	}
-	if err := os.MkdirAll(downloadDir, 0o755); err != nil {
+	defer func() { _ = cacheRoot.close() }()
+	if err := cacheRoot.ensureDirectory(downloadDir, "archive cache directory"); err != nil {
 		return "", fmt.Errorf("create archive cache directory %s: %w", downloadDir, err)
 	}
+	lockDir := filepath.Join(store.cacheDir, "locks", string(policy.algorithm))
+	if err := cacheRoot.ensureDirectory(lockDir, "archive cache lock directory"); err != nil {
+		return "", fmt.Errorf("create archive cache lock directory %s: %w", lockDir, err)
+	}
+	lockPath := filepath.Join(lockDir, expected+".lock")
+	if _, err := cacheRoot.inspectFile(lockPath, "archive cache lock"); err != nil {
+		return "", err
+	}
+	lockFile, err := cacheRoot.openFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return "", fmt.Errorf("open archive cache lock %s: %w", lockPath, err)
+	}
+	return withArchiveCacheLock(
+		ctx,
+		lockFile,
+		lockPath,
+		func() (string, error) {
+			if _, err := cacheRoot.inspectFile(finalPath, "cached archive"); err != nil {
+				return "", err
+			}
+			valid, err := archiveMatchesChecksum(finalPath, expected, policy)
+			if err != nil {
+				return "", fmt.Errorf("verify cached archive %s: %w", finalPath, err)
+			}
+			if valid {
+				return finalPath, nil
+			}
+			if err := os.Remove(finalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return "", fmt.Errorf("remove invalid cached archive %s: %w", finalPath, err)
+			}
+			return store.downloadArchive(ctx, archive.URL, expected, downloadDir, finalPath, policy)
+		},
+	)
+}
 
-	return store.downloadArchive(ctx, archive.URL, expected, downloadDir, finalPath, policy)
+func withArchiveCacheLock(
+	ctx context.Context,
+	file *os.File,
+	lockPath string,
+	operation func() (string, error),
+) (result string, resultErr error) {
+	lock, err := acquireAdvisoryFileLock(ctx, file, nil)
+	if err != nil {
+		return "", fmt.Errorf("lock archive cache entry %s: %w", lockPath, err)
+	}
+	defer func() {
+		if err := lock.release(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("release archive cache lock: %w", err))
+		}
+	}()
+	return operation()
 }
 
 func checksumPolicyFor(algorithm qtrepo.ChecksumAlgorithm) (checksumPolicy, error) {

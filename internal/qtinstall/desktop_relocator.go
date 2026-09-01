@@ -39,31 +39,21 @@ func NewDesktopRelocator(identity qtrepo.QtInstallationIdentity) (*DesktopReloca
 	}, nil
 }
 
+// Validate checks that kitDir is a matching native desktop Qt installation.
+func (relocator *DesktopRelocator) Validate(ctx context.Context, kitDir string) error {
+	_, err := relocator.validatedKitDirectory(ctx, kitDir)
+	return err
+}
+
 // Relocate writes qt.conf and repairs text metadata that embeds Qt's build
 // prefix. The extracted kit is validated before any file is changed.
 func (relocator *DesktopRelocator) Relocate(
 	ctx context.Context,
 	kitDir string,
 ) (resultErr error) {
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("relocate desktop Qt kit: %w", err)
-	}
-	if relocator == nil {
-		return fmt.Errorf("desktop Qt relocator is not configured")
-	}
-	if strings.TrimSpace(kitDir) == "" {
-		return fmt.Errorf("desktop Qt kit directory must not be empty")
-	}
-	if strings.ContainsAny(kitDir, "\r\n\x00") {
-		return fmt.Errorf("desktop Qt kit directory contains unsupported characters")
-	}
-
-	absoluteKitDir, err := filepath.Abs(kitDir)
+	absoluteKitDir, err := relocator.validatedKitDirectory(ctx, kitDir)
 	if err != nil {
-		return fmt.Errorf("resolve desktop Qt kit directory %s: %w", kitDir, err)
-	}
-	if err := validateHostQtDirectory(relocator.identity, absoluteKitDir, relocator.profile); err != nil {
-		return fmt.Errorf("validate extracted desktop Qt kit %s: %w", absoluteKitDir, err)
+		return err
 	}
 
 	root, err := os.OpenRoot(absoluteKitDir)
@@ -138,6 +128,33 @@ func (relocator *DesktopRelocator) Relocate(
 		return fmt.Errorf("apply desktop Qt relocation: %w", err)
 	}
 	return nil
+}
+
+func (relocator *DesktopRelocator) validatedKitDirectory(
+	ctx context.Context,
+	kitDir string,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("relocate desktop Qt kit: %w", err)
+	}
+	if relocator == nil {
+		return "", fmt.Errorf("desktop Qt relocator is not configured")
+	}
+	if strings.TrimSpace(kitDir) == "" {
+		return "", fmt.Errorf("desktop Qt kit directory must not be empty")
+	}
+	if strings.ContainsAny(kitDir, "\r\n\x00") {
+		return "", fmt.Errorf("desktop Qt kit directory contains unsupported characters")
+	}
+
+	absoluteKitDir, err := filepath.Abs(kitDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve desktop Qt kit directory %s: %w", kitDir, err)
+	}
+	if err := validateHostQtDirectory(relocator.identity, absoluteKitDir, relocator.profile); err != nil {
+		return "", fmt.Errorf("validate extracted desktop Qt kit %s: %w", absoluteKitDir, err)
+	}
+	return absoluteKitDir, nil
 }
 
 func prepareDesktopQtConfiguration(

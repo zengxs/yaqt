@@ -154,9 +154,29 @@ $ yaqt install-qt 6.8.0 \
     --dry-run
 ```
 
+Complete installations are incremental by default. yaqt records repository
+package versions in `<kit>/.yaqt/manifest.json`, where `<kit>` is a concrete
+directory such as `macos`, `ios`, or `android_arm64_v8a`. Repeating a satisfied
+request performs no download, extraction, or relocation. Adding a module
+downloads and extracts only that module; modules omitted from a later command
+remain installed. If a requested package's repository version changes, yaqt
+updates that package.
+
+Incremental installation is additive: yaqt does not uninstall omitted modules
+or track ownership of individual files. A package update overlays the new
+archives, so files removed from a later upstream package may remain in the kit.
+
+When a valid existing kit has no manifest, yaqt adopts its base package instead
+of extracting the base again. Existing modules cannot be inferred reliably, so
+each explicitly requested module is installed once before the first manifest is
+written. A manifest is published atomically only after successful path
+relocation. `--download-only` and `--extract-only` never write one.
+
 The dry run reads `Updates.xml`, groups selected archives by their base or module
 package, resolves the exact archive and checksum URLs, honors archive-specific
-extraction paths, and reports the matching desktop Qt requirement.
+extraction paths, reports the matching desktop Qt requirement, and labels every
+selected package as `install`, `update`, `skip`, or `adopt` according to the
+current kit state.
 
 Download and verify the selected archives without extracting them:
 
@@ -170,7 +190,8 @@ $ yaqt install-qt 6.8.0 \
 
 Verified archives are stored in a content-addressed cache. Use `--cache-dir` to
 select its root, or set `YAQT_CACHE_DIR`. Otherwise, yaqt uses the operating
-system's user cache directory.
+system's user cache directory. Concurrent requests for the same SHA-256 digest
+share a cache-entry lock, so only one process downloads that archive.
 
 Stop after extraction when inspecting or diagnosing the unrelocated archive
 contents:
@@ -189,6 +210,13 @@ destination, rejects other special files, and preserves safe permission and
 executable bits.
 This mode deliberately stops before target-specific path relocation, so its
 output is not a complete Qt installation.
+
+Complete installations and `--extract-only` operations hold a version-level
+lock at `<root>/<version>/.yaqt/install.lock`. This serializes changes across
+all kits of the same Qt version while still allowing different versions to be
+installed concurrently. The lock file is persistent; ownership is determined
+by the operating system lock, not by the file's presence. `--download-only`
+does not acquire the installation lock.
 
 ## Relationship to Qt
 
