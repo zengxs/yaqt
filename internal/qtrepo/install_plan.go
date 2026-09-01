@@ -201,42 +201,19 @@ func (c *Client) resolveDesktopKit(
 	modules []string,
 	destination string,
 ) (DesktopKit, error) {
-	metadata, descriptor, err := desktopPackageVariantMetadata(repository, version, architecture)
+	specification, err := desktopPackageVariantSpecification(repository, version, architecture)
 	if err != nil {
 		return DesktopKit{}, err
 	}
-	packages, err := c.fetchPackageUpdates(ctx, metadata.url)
-	if err != nil {
-		return DesktopKit{}, err
-	}
-
-	selected, err := selectPackageUpdates(
-		packages,
-		metadata,
-		modules,
-		version,
-	)
-	if err != nil {
-		return DesktopKit{}, err
-	}
-	packageSelections, err := resolvePackageSelections(
-		metadata,
-		destination,
-		version,
-		selected,
-	)
+	install, err := c.resolvePackageVariantInstall(ctx, specification, modules, destination)
 	if err != nil {
 		return DesktopKit{}, err
 	}
 
 	return DesktopKit{
 		Architecture: architecture,
-		Destination: filepath.Join(
-			destination,
-			version.String(),
-			descriptor.installDirectory,
-		),
-		Packages: packageSelections,
+		Destination:  install.destination,
+		Packages:     install.packages,
 	}, nil
 }
 
@@ -248,33 +225,19 @@ func (c *Client) resolveAndroidKit(
 	modules []string,
 	destination string,
 ) (AndroidKit, error) {
-	metadata, err := androidPackageVariantMetadata(repository, version, abi)
+	specification, err := androidPackageVariantSpecification(repository, version, abi)
 	if err != nil {
 		return AndroidKit{}, err
 	}
-	packages, err := c.fetchPackageUpdates(ctx, metadata.url)
-	if err != nil {
-		return AndroidKit{}, err
-	}
-
-	selected, err := selectPackageUpdates(
-		packages,
-		metadata,
-		modules,
-		version,
-	)
-	if err != nil {
-		return AndroidKit{}, err
-	}
-	packageSelections, err := resolvePackageSelections(metadata, destination, version, selected)
+	install, err := c.resolvePackageVariantInstall(ctx, specification, modules, destination)
 	if err != nil {
 		return AndroidKit{}, err
 	}
 
 	return AndroidKit{
 		ABI:         abi,
-		Destination: filepath.Join(destination, version.String(), metadata.packageArchitecture),
-		Packages:    packageSelections,
+		Destination: install.destination,
+		Packages:    install.packages,
 	}, nil
 }
 
@@ -386,10 +349,8 @@ func resolvePackageArchives(
 		if relativePath != "" {
 			extractTo = filepath.Join(destination, filepath.FromSlash(relativePath))
 		}
-		logicalName, _, _ := strings.Cut(archiveName, "-")
-		logicalName = strings.TrimSuffix(logicalName, ".7z")
 		archives = append(archives, Archive{
-			Name: logicalName,
+			Name: logicalArchiveName(archiveName),
 			URL:  archiveURL,
 			Checksum: Checksum{
 				Algorithm: ChecksumSHA256,
@@ -486,7 +447,7 @@ func normalizeModules(values []string) ([]string, error) {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
 		module := strings.ToLower(strings.TrimSpace(value))
-		if !validModuleName(module) {
+		if !validPackageIdentifier(module) {
 			return nil, fmt.Errorf("invalid Qt module name %q", value)
 		}
 		if _, ok := seen[module]; ok {
@@ -498,7 +459,7 @@ func normalizeModules(values []string) ([]string, error) {
 	return result, nil
 }
 
-func validModuleName(value string) bool {
+func validPackageIdentifier(value string) bool {
 	if value == "" {
 		return false
 	}

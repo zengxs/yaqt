@@ -23,6 +23,9 @@ type desktopArchitectureDescriptor struct {
 	extensionRepositoryArchitecture string
 }
 
+// desktopArchitectureDescriptors defines the native variants that yaqt can
+// currently install. Repository architecture discovery is metadata-driven and
+// may report additional variants.
 var desktopArchitectureDescriptors = map[DesktopArchitecture]desktopArchitectureDescriptor{
 	DesktopArchitectureMacClang64: {
 		host:                            HostMac,
@@ -96,18 +99,4 @@ func (architecture DesktopArchitecture) descriptor() (desktopArchitectureDescrip
 		)
 	}
 	return descriptor, nil
-}
-
-func (architecture DesktopArchitecture) extensionRepositoryArchitecture() (string, error) {
-	descriptor, err := architecture.descriptor()
-	if err != nil {
-		return "", err
-	}
-	if descriptor.extensionRepositoryArchitecture == "" {
-		return "", fmt.Errorf(
-			"desktop Qt architecture %q has no extension repository architecture",
-			architecture,
-		)
-	}
-	return descriptor.extensionRepositoryArchitecture, nil
 }

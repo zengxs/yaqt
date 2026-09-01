@@ -4,25 +4,27 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"path/filepath"
 )
 
 const iosPackageArchitecture = "ios"
 
-func iosPackageVariantMetadata(
+func iosPackageVariantSpecification(
 	repository Repository,
 	version Version,
-) (packageVariantMetadata, error) {
+) (packageVariantSpecification, error) {
 	metadataURL, err := iosMetadataURL(repository, version)
 	if err != nil {
-		return packageVariantMetadata{}, err
+		return packageVariantSpecification{}, err
 	}
-	return newPackageVariantMetadata(
-		metadataURL,
-		version,
-		iosPackageArchitecture,
-		"iOS",
-	), nil
+	return packageVariantSpecification{
+		metadata: newPackageVariantMetadata(
+			metadataURL,
+			version,
+			iosPackageArchitecture,
+			"iOS",
+		),
+		installDirectoryFallback: iosPackageArchitecture,
+	}, nil
 }
 
 func iosMetadataURL(repository Repository, version Version) (string, error) {
@@ -77,39 +79,26 @@ func (c *Client) resolveIOSKit(
 	modules []string,
 	destination string,
 ) (IOSKit, error) {
-	metadata, err := iosPackageVariantMetadata(repository, version)
+	specification, err := iosPackageVariantSpecification(repository, version)
 	if err != nil {
 		return IOSKit{}, err
 	}
-	packages, err := c.fetchPackageUpdates(ctx, metadata.url)
-	if err != nil {
-		return IOSKit{}, err
-	}
-	selected, err := selectPackageUpdates(packages, metadata, modules, version)
-	if err != nil {
-		return IOSKit{}, err
-	}
-	packageSelections, err := resolvePackageSelections(
-		metadata,
-		destination,
-		version,
-		selected,
-	)
+	install, err := c.resolvePackageVariantInstall(ctx, specification, modules, destination)
 	if err != nil {
 		return IOSKit{}, err
 	}
 	return IOSKit{
-		Destination: filepath.Join(destination, version.String(), iosPackageArchitecture),
-		Packages:    packageSelections,
+		Destination: install.destination,
+		Packages:    install.packages,
 	}, nil
 }
 
-func iosModuleVariant(request ModuleRequest) (packageVariantMetadata, error) {
+func iosModuleVariant(request ModuleRequest) (packageVariantSpecification, error) {
 	if request.DesktopArchitecture != "" {
-		return packageVariantMetadata{}, fmt.Errorf("desktop architecture cannot be used with the iOS target")
+		return packageVariantSpecification{}, fmt.Errorf("desktop architecture cannot be used with the iOS target")
 	}
 	if request.AndroidABI != "" {
-		return packageVariantMetadata{}, fmt.Errorf("Android ABI cannot be used with the iOS target")
+		return packageVariantSpecification{}, fmt.Errorf("Android ABI cannot be used with the iOS target")
 	}
-	return iosPackageVariantMetadata(request.Repository, request.Version)
+	return iosPackageVariantSpecification(request.Repository, request.Version)
 }

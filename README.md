@@ -39,6 +39,29 @@ host and target. Android, WebAssembly, and shared Qt content are routed through
 Qt's platform-independent `all_os` repository without changing the user-visible
 host. The iOS repository is available only for the `mac` host.
 
+List the package architectures advertised for one exact release:
+
+```console
+$ yaqt list-architectures 6.11.2 \
+    --host windows \
+    --target desktop
+win64_llvm_mingw
+win64_mingw
+win64_msvc2022_64
+win64_msvc2022_arm64_cross_compiled
+```
+
+The command supports the `desktop`, `android`, `ios`, and `wasm` repositories.
+It reads the release's directory index and each package variant's `Updates.xml`,
+then prints architecture identifiers with usable archive metadata in ascending
+order. Android results use Qt package names such as `android_arm64_v8a`, while
+`install-qt` continues to accept the standard spelling `--abi arm64-v8a`.
+
+Architecture listing describes repository availability; it does not imply that
+yaqt can complete target-specific installation and relocation for every listed
+variant. The native desktop variants supported by `install-qt` are documented
+below. WebAssembly installation is not implemented yet.
+
 List the additional modules available for the current host's native desktop
 package:
 

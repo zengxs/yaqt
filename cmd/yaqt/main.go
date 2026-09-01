@@ -33,9 +33,10 @@ func main() {
 	}
 	command := newCommand(
 		commandDependencies{
-			versionLister: client,
-			moduleLister:  client,
-			install:       installDependencies,
+			versionLister:      client,
+			architectureLister: client,
+			moduleLister:       client,
+			install:            installDependencies,
 		},
 		defaultHost,
 		os.Stdout,
@@ -73,9 +74,10 @@ type installCommandDependencies struct {
 }
 
 type commandDependencies struct {
-	versionLister versionLister
-	moduleLister  moduleLister
-	install       installCommandDependencies
+	versionLister      versionLister
+	architectureLister architectureLister
+	moduleLister       moduleLister
+	install            installCommandDependencies
 }
 
 type installExecutionMode uint8
@@ -102,6 +104,7 @@ func newCommand(
 		Suggest:   true,
 		Commands: []*cli.Command{
 			newListQtCommand(dependencies.versionLister, defaultHost, output),
+			newListArchitecturesCommand(dependencies.architectureLister, defaultHost, output),
 			newListModulesCommand(dependencies.moduleLister, defaultHost, output),
 			newInstallQtCommand(
 				dependencies.install,

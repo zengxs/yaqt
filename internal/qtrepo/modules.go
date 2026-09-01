@@ -35,29 +35,18 @@ func (c *Client) ListModules(
 			request.Repository.Target,
 		)
 	}
-	metadata, err := operations.resolveModuleVariant(request)
+	specification, err := operations.resolveModuleVariant(request)
 	if err != nil {
 		return nil, err
 	}
-	packages, err := c.fetchPackageUpdates(ctx, metadata.url)
+	variant, err := c.resolvePackageVariant(ctx, specification)
 	if err != nil {
 		return nil, err
 	}
-
-	baseSelection, err := selectPackageUpdates(packages, metadata, nil, request.Version)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := resolvePackageSelections(
-		metadata,
-		moduleValidationDestination,
-		request.Version,
-		baseSelection,
-	); err != nil {
-		return nil, err
-	}
+	metadata := variant.specification.metadata
+	packages := variant.packages
 	modules := availableModuleNames(packages, metadata, request.Version)
-	extensions, err := c.listExtensionModules(ctx, request, metadata)
+	extensions, err := c.listExtensionModules(ctx, request, variant)
 	if err != nil {
 		return nil, err
 	}
@@ -76,44 +65,44 @@ func (c *Client) ListModules(
 	return modules, nil
 }
 
-func desktopModuleVariant(request ModuleRequest) (packageVariantMetadata, error) {
+func desktopModuleVariant(request ModuleRequest) (packageVariantSpecification, error) {
 	if request.AndroidABI != "" {
-		return packageVariantMetadata{}, fmt.Errorf("Android ABI cannot be used with the desktop target")
+		return packageVariantSpecification{}, fmt.Errorf("Android ABI cannot be used with the desktop target")
 	}
 	architecture, err := ResolveDesktopArchitecture(
 		request.Repository.Host,
 		string(request.DesktopArchitecture),
 	)
 	if err != nil {
-		return packageVariantMetadata{}, err
+		return packageVariantSpecification{}, err
 	}
-	metadata, _, err := desktopPackageVariantMetadata(
+	specification, err := desktopPackageVariantSpecification(
 		request.Repository,
 		request.Version,
 		architecture,
 	)
 	if err != nil {
-		return packageVariantMetadata{}, err
+		return packageVariantSpecification{}, err
 	}
-	return metadata, nil
+	return specification, nil
 }
 
-func androidModuleVariant(request ModuleRequest) (packageVariantMetadata, error) {
+func androidModuleVariant(request ModuleRequest) (packageVariantSpecification, error) {
 	if request.DesktopArchitecture != "" {
-		return packageVariantMetadata{}, fmt.Errorf("desktop architecture cannot be used with the Android target")
+		return packageVariantSpecification{}, fmt.Errorf("desktop architecture cannot be used with the Android target")
 	}
 	if request.AndroidABI == "" {
-		return packageVariantMetadata{}, fmt.Errorf("Android ABI is required for module listing")
+		return packageVariantSpecification{}, fmt.Errorf("Android ABI is required for module listing")
 	}
 	abi, err := ParseAndroidABI(string(request.AndroidABI))
 	if err != nil {
-		return packageVariantMetadata{}, err
+		return packageVariantSpecification{}, err
 	}
-	metadata, err := androidPackageVariantMetadata(request.Repository, request.Version, abi)
+	specification, err := androidPackageVariantSpecification(request.Repository, request.Version, abi)
 	if err != nil {
-		return packageVariantMetadata{}, err
+		return packageVariantSpecification{}, err
 	}
-	return metadata, nil
+	return specification, nil
 }
 
 func availableModuleNames(
@@ -133,7 +122,7 @@ func availableModuleNames(
 			continue
 		}
 		name = strings.TrimPrefix(name, "addons.")
-		if !validModuleName(name) {
+		if !validPackageIdentifier(name) {
 			continue
 		}
 		packageNames := metadata.modulePackageNames(name)

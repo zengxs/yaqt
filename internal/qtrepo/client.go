@@ -98,7 +98,30 @@ func (c *Client) fetchResource(
 }
 
 func parseVersions(reader io.Reader, repository Repository) ([]Version, error) {
+	names, err := parseRepositoryChildNames(reader)
+	if err != nil {
+		return nil, err
+	}
+
 	versions := make(map[Version]struct{})
+	for _, name := range names {
+		entry, ok := parseRepositoryEntry(name)
+		if ok && includeEntry(repository, entry) {
+			versions[entry.Version] = struct{}{}
+		}
+	}
+	result := make([]Version, 0, len(versions))
+	for version := range versions {
+		result = append(result, version)
+	}
+	slices.SortFunc(result, func(left, right Version) int {
+		return left.compare(right)
+	})
+	return result, nil
+}
+
+func parseRepositoryChildNames(reader io.Reader) ([]string, error) {
+	names := make(map[string]struct{})
 	tokenizer := html.NewTokenizer(reader)
 
 	for {
@@ -107,14 +130,11 @@ func parseVersions(reader io.Reader, repository Repository) ([]Version, error) {
 			if err := tokenizer.Err(); err != io.EOF {
 				return nil, err
 			}
-
-			result := make([]Version, 0, len(versions))
-			for version := range versions {
-				result = append(result, version)
+			result := make([]string, 0, len(names))
+			for name := range names {
+				result = append(result, name)
 			}
-			slices.SortFunc(result, func(left, right Version) int {
-				return left.compare(right)
-			})
+			slices.Sort(result)
 			return result, nil
 
 		case html.StartTagToken, html.SelfClosingTagToken:
@@ -132,10 +152,7 @@ func parseVersions(reader io.Reader, repository Repository) ([]Version, error) {
 				if !ok {
 					break
 				}
-				entry, ok := parseRepositoryEntry(name)
-				if ok && includeEntry(repository, entry) {
-					versions[entry.Version] = struct{}{}
-				}
+				names[name] = struct{}{}
 				break
 			}
 		}
@@ -165,7 +182,11 @@ func includeEntry(repository Repository, entry repositoryEntry) bool {
 	if repository.Target != TargetQt {
 		return false
 	}
-	switch entry.Extension {
+	return isSourceContentRepositoryExtension(entry.Extension)
+}
+
+func isSourceContentRepositoryExtension(extension string) bool {
+	switch extension {
 	case "unix_line_endings_src", "windows_line_endings_src", "src_doc_examples":
 		return true
 	default:

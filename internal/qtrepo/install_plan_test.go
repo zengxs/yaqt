@@ -168,6 +168,39 @@ func TestClientResolveDesktopInstallPlan(t *testing.T) {
 	}
 }
 
+func TestClientResolveDesktopInstallPlanUsesMetadataInstallDirectory(t *testing.T) {
+	version := Version{Major: 6, Minor: 11, Patch: 2}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/online/qtsdkrepository/mac_x64/desktop/qt6_6112/qt6_6112/Updates.xml" {
+			http.NotFound(writer, request)
+			return
+		}
+		writeArchitectureMetadata(writer, version, "clang_64", "metadata_macos")
+	}))
+	defer server.Close()
+
+	repository, err := NewRepository(server.URL, HostMac, TargetDesktop)
+	if err != nil {
+		t.Fatalf("NewRepository() error = %v", err)
+	}
+	plan, err := NewClient(server.Client()).ResolveInstall(context.Background(), InstallRequest{
+		Repository:          repository,
+		Version:             version,
+		DesktopArchitecture: DesktopArchitectureMacClang64,
+		Destination:         "/opt/Qt",
+	})
+	if err != nil {
+		t.Fatalf("ResolveInstall() error = %v", err)
+	}
+	if plan.DesktopKit == nil {
+		t.Fatal("plan.DesktopKit = nil, want a desktop kit")
+	}
+	want := filepath.Join("/opt/Qt", "6.11.2", "metadata_macos")
+	if got := plan.DesktopKit.Destination; got != want {
+		t.Errorf("desktop destination = %q, want metadata-derived %q", got, want)
+	}
+}
+
 func TestClientResolveIOSInstallPlan(t *testing.T) {
 	server := newMetadataServer(
 		t,

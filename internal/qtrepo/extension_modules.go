@@ -11,41 +11,37 @@ var extensionModuleNames = []string{"qtwebengine", "qtpdf"}
 func (c *Client) listExtensionModules(
 	ctx context.Context,
 	request ModuleRequest,
-	mainMetadata packageVariantMetadata,
+	mainVariant packageVariant,
 ) ([]string, error) {
-	repositoryArchitecture, err := extensionRepositoryArchitecture(request, mainMetadata)
-	if err != nil {
-		return nil, err
+	mainMetadata := mainVariant.specification.metadata
+	repositoryArchitecture := mainVariant.specification.extensionRepositoryArchitecture
+	if repositoryArchitecture == "" {
+		repositoryArchitecture = mainMetadata.packageArchitecture
 	}
 	modules := make([]string, 0, len(extensionModuleNames))
 	for _, module := range extensionModuleNames {
-		metadata, err := extensionPackageVariantMetadata(
+		specification, err := extensionPackageVariantSpecification(
 			request.Repository,
 			request.Version,
 			mainMetadata.packageArchitecture,
 			repositoryArchitecture,
 			module,
+			mainVariant.installDirectory,
 		)
 		if err != nil {
 			return nil, err
 		}
-		packages, found, err := c.fetchOptionalPackageUpdates(ctx, metadata.url)
+		packages, found, err := c.fetchOptionalPackageUpdates(ctx, specification.metadata.url)
 		if err != nil {
 			return nil, err
 		}
 		if !found {
 			continue
 		}
-		update, ok := packages[metadata.basePackageName()]
-		if !ok {
+		if _, ok := packages[specification.metadata.basePackageName()]; !ok {
 			continue
 		}
-		if _, err := resolvePackageSelections(
-			metadata,
-			moduleValidationDestination,
-			request.Version,
-			[]selectedPackage{{update: update, module: module}},
-		); err != nil {
+		if _, err := resolvePackageVariant(specification, packages); err != nil {
 			return nil, fmt.Errorf("validate extension module %q: %w", module, err)
 		}
 		modules = append(modules, module)
@@ -53,13 +49,14 @@ func (c *Client) listExtensionModules(
 	return modules, nil
 }
 
-func extensionPackageVariantMetadata(
+func extensionPackageVariantSpecification(
 	repository Repository,
 	version Version,
 	packageArchitecture,
 	repositoryArchitecture,
-	module string,
-) (packageVariantMetadata, error) {
+	module,
+	installDirectoryFallback string,
+) (packageVariantSpecification, error) {
 	metadataURL, err := url.JoinPath(
 		repository.repositoryRootURL,
 		"extensions",
@@ -69,31 +66,16 @@ func extensionPackageVariantMetadata(
 		"Updates.xml",
 	)
 	if err != nil {
-		return packageVariantMetadata{}, fmt.Errorf("construct %s extension metadata URL: %w", module, err)
+		return packageVariantSpecification{}, fmt.Errorf("construct %s extension metadata URL: %w", module, err)
 	}
-	return packageVariantMetadata{
-		url:                 metadataURL,
-		packagePrefix:       fmt.Sprintf("extensions.%s.%s.", module, version.compact()),
-		packageArchitecture: packageArchitecture,
-		description:         "extension module " + module,
+	return packageVariantSpecification{
+		metadata: packageVariantMetadata{
+			url:                 metadataURL,
+			version:             version,
+			packagePrefix:       fmt.Sprintf("extensions.%s.%s.", module, version.compact()),
+			packageArchitecture: packageArchitecture,
+			description:         "extension module " + module,
+		},
+		installDirectoryFallback: installDirectoryFallback,
 	}, nil
-}
-
-func extensionRepositoryArchitecture(
-	request ModuleRequest,
-	mainMetadata packageVariantMetadata,
-) (string, error) {
-	if request.Repository.Target == TargetAndroid {
-		return fmt.Sprintf(
-			"qt%d_%s_%s",
-			request.Version.Major,
-			request.Version.compact(),
-			request.AndroidABI.repositoryName(),
-		), nil
-	}
-	if request.Repository.Target == TargetDesktop {
-		return DesktopArchitecture(mainMetadata.packageArchitecture).
-			extensionRepositoryArchitecture()
-	}
-	return mainMetadata.packageArchitecture, nil
 }

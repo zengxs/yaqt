@@ -10,7 +10,7 @@ type installTargetPlanner func(
 	string,
 ) (InstallPlan, error)
 
-type moduleVariantResolver func(ModuleRequest) (packageVariantMetadata, error)
+type moduleVariantResolver func(ModuleRequest) (packageVariantSpecification, error)
 
 type packageTargetOperations struct {
 	planInstall          installTargetPlanner

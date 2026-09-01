@@ -15,9 +15,16 @@ var splitWindowsDesktopMetadataVersion = Version{Major: 6, Minor: 11}
 
 type packageVariantMetadata struct {
 	url                 string
+	version             Version
 	packagePrefix       string
 	packageArchitecture string
 	description         string
+}
+
+type packageVariantSpecification struct {
+	metadata                        packageVariantMetadata
+	installDirectoryFallback        string
+	extensionRepositoryArchitecture string
 }
 
 func newPackageVariantMetadata(
@@ -28,48 +35,62 @@ func newPackageVariantMetadata(
 ) packageVariantMetadata {
 	return packageVariantMetadata{
 		url:                 metadataURL,
+		version:             version,
 		packagePrefix:       fmt.Sprintf("qt.qt%d.%s.", version.Major, version.compact()),
 		packageArchitecture: packageArchitecture,
 		description:         description,
 	}
 }
 
-func desktopPackageVariantMetadata(
+func desktopPackageVariantSpecification(
 	repository Repository,
 	version Version,
 	architecture DesktopArchitecture,
-) (packageVariantMetadata, desktopArchitectureDescriptor, error) {
+) (packageVariantSpecification, error) {
 	descriptor, err := architecture.descriptor()
 	if err != nil {
-		return packageVariantMetadata{}, desktopArchitectureDescriptor{}, err
+		return packageVariantSpecification{}, err
 	}
 	metadataURL, err := desktopMetadataURL(repository, version, architecture, descriptor)
 	if err != nil {
-		return packageVariantMetadata{}, desktopArchitectureDescriptor{}, err
+		return packageVariantSpecification{}, err
 	}
-	return newPackageVariantMetadata(
-		metadataURL,
-		version,
-		string(architecture),
-		"desktop architecture "+string(architecture),
-	), descriptor, nil
+	return packageVariantSpecification{
+		metadata: newPackageVariantMetadata(
+			metadataURL,
+			version,
+			string(architecture),
+			"desktop architecture "+string(architecture),
+		),
+		installDirectoryFallback:        descriptor.installDirectory,
+		extensionRepositoryArchitecture: descriptor.extensionRepositoryArchitecture,
+	}, nil
 }
 
-func androidPackageVariantMetadata(
+func androidPackageVariantSpecification(
 	repository Repository,
 	version Version,
 	abi AndroidABI,
-) (packageVariantMetadata, error) {
+) (packageVariantSpecification, error) {
 	metadataURL, err := androidMetadataURL(repository, version, abi)
 	if err != nil {
-		return packageVariantMetadata{}, err
+		return packageVariantSpecification{}, err
 	}
-	return newPackageVariantMetadata(
-		metadataURL,
-		version,
-		abi.packageArchitecture(),
-		"Android ABI "+string(abi),
-	), nil
+	return packageVariantSpecification{
+		metadata: newPackageVariantMetadata(
+			metadataURL,
+			version,
+			abi.packageArchitecture(),
+			"Android ABI "+string(abi),
+		),
+		installDirectoryFallback: abi.packageArchitecture(),
+		extensionRepositoryArchitecture: fmt.Sprintf(
+			"qt%d_%s_%s",
+			version.Major,
+			version.compact(),
+			abi.repositoryName(),
+		),
+	}, nil
 }
 
 func (metadata packageVariantMetadata) basePackageName() string {

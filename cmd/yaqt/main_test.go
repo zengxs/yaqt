@@ -16,12 +16,14 @@ import (
 )
 
 type stubRepositoryClient struct {
-	repository     qtrepo.Repository
-	versions       []qtrepo.Version
-	modules        []string
-	moduleRequest  qtrepo.ModuleRequest
-	installRequest qtrepo.InstallRequest
-	installPlan    qtrepo.InstallPlan
+	repository          qtrepo.Repository
+	versions            []qtrepo.Version
+	architectures       []string
+	architectureRequest qtrepo.ArchitectureRequest
+	modules             []string
+	moduleRequest       qtrepo.ModuleRequest
+	installRequest      qtrepo.InstallRequest
+	installPlan         qtrepo.InstallPlan
 }
 
 type stubArchiveFetcher struct {
@@ -109,6 +111,14 @@ func (stub *stubInstallRelocator) Relocate(_ context.Context, kitDir string) err
 func (stub *stubRepositoryClient) ListVersions(_ context.Context, repository qtrepo.Repository) ([]qtrepo.Version, error) {
 	stub.repository = repository
 	return stub.versions, nil
+}
+
+func (stub *stubRepositoryClient) ListArchitectures(
+	_ context.Context,
+	request qtrepo.ArchitectureRequest,
+) ([]string, error) {
+	stub.architectureRequest = request
+	return stub.architectures, nil
 }
 
 func (stub *stubRepositoryClient) ListModules(
