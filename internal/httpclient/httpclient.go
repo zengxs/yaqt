@@ -3,6 +3,7 @@ package httpclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -14,6 +15,27 @@ type Resource struct {
 	URL         string
 	Accept      string
 	Description string
+}
+
+type statusError struct {
+	resource Resource
+	status   string
+	code     int
+}
+
+func (err *statusError) Error() string {
+	return fmt.Sprintf(
+		"fetch %s %s: server returned %s",
+		err.resource.Description,
+		err.resource.URL,
+		err.status,
+	)
+}
+
+// HasStatusCode reports whether err came from an HTTP response with code.
+func HasStatusCode(err error, code int) bool {
+	var responseError *statusError
+	return errors.As(err, &responseError) && responseError.code == code
 }
 
 // Get retrieves resource after applying yaqt request headers and status policy.
@@ -35,12 +57,11 @@ func Get(ctx context.Context, client *http.Client, resource Resource) (*http.Res
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		_ = response.Body.Close()
-		return nil, fmt.Errorf(
-			"fetch %s %s: server returned %s",
-			resource.Description,
-			resource.URL,
-			response.Status,
-		)
+		return nil, &statusError{
+			resource: resource,
+			status:   response.Status,
+			code:     response.StatusCode,
+		}
 	}
 	return response, nil
 }

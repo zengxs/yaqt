@@ -23,8 +23,8 @@ func newListModulesCommand(
 		Name:      "list-modules",
 		Usage:     "List additional Qt modules available for a package variant",
 		ArgsUsage: "VERSION",
-		Description: "Read a version and package variant's Updates.xml metadata and " +
-			"print additional installable modules in ascending order.",
+		Description: "Read a version and package variant's main and extension metadata and " +
+			"print additional available modules in ascending order.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "host",

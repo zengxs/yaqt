@@ -1,0 +1,24 @@
+<Updates>
+ <PackageUpdate>
+  <Name>qt.qt6.6112.clang_64</Name>
+  <Version>6.11.2-0-test</Version>
+  <DownloadableArchives>qtbase.7z</DownloadableArchives>
+  <Operations>
+   <Operation name="Extract">
+    <Argument>@TargetDir@/6.11.2/macos</Argument>
+    <Argument>qtbase.7z</Argument>
+   </Operation>
+  </Operations>
+ </PackageUpdate>
+ <PackageUpdate>
+  <Name>qt.qt6.6112.addons.qtpdf.clang_64</Name>
+  <Version>6.11.2-0-test</Version>
+  <DownloadableArchives>qtpdf-main.7z</DownloadableArchives>
+  <Operations>
+   <Operation name="Extract">
+    <Argument>@TargetDir@/6.11.2/macos</Argument>
+    <Argument>qtpdf-main.7z</Argument>
+   </Operation>
+  </Operations>
+ </PackageUpdate>
+</Updates>

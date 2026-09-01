@@ -61,9 +61,12 @@ $ yaqt list-modules 6.11.2 \
 $ yaqt list-modules 6.11.2 --target ios
 ```
 
-The command reads the corresponding `Updates.xml` and prints additional
-installable module names in ascending order. Each printed name can be passed to
-the repeatable `install-qt --module` flag.
+The command reads the corresponding main `Updates.xml` and the known Qt 6.8+
+extension repositories, then prints available module names in ascending order.
+Main-repository module names can be passed to the repeatable
+`install-qt --module` flag. Extension modules such as `qtpdf` and
+`qtwebengine` are listed when available, but installing them is not implemented
+yet.
 
 Install the native desktop Qt for the current host:
 

@@ -1,0 +1,13 @@
+<Updates>
+ <PackageUpdate>
+  <Name>extensions.qtpdf.6112.clang_64</Name>
+  <Version>6.11.2-0-202608131118</Version>
+  <DownloadableArchives>qtpdf-macos.7z</DownloadableArchives>
+  <Operations>
+   <Operation name="Extract">
+    <Argument>@TargetDir@/6.11.2/macos</Argument>
+    <Argument>qtpdf-macos.7z</Argument>
+   </Operation>
+  </Operations>
+ </PackageUpdate>
+</Updates>

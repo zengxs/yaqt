@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/zengxs/yaqt/internal/httpclient"
 )
 
 var splitWindowsDesktopMetadataVersion = Version{Major: 6, Minor: 11}
@@ -114,6 +117,20 @@ func (c *Client) fetchPackageUpdates(
 		packages[strings.TrimSpace(update.Name)] = update
 	}
 	return packages, nil
+}
+
+func (c *Client) fetchOptionalPackageUpdates(
+	ctx context.Context,
+	metadataURL string,
+) (map[string]packageUpdate, bool, error) {
+	packages, err := c.fetchPackageUpdates(ctx, metadataURL)
+	if err != nil {
+		if httpclient.HasStatusCode(err, http.StatusNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return packages, true, nil
 }
 
 func androidMetadataURL(repository Repository, version Version, abi AndroidABI) (string, error) {

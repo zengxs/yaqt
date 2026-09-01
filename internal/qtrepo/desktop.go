@@ -17,32 +17,38 @@ const (
 )
 
 type desktopArchitectureDescriptor struct {
-	host             Host
-	installDirectory string
-	repositorySuffix string
+	host                            Host
+	installDirectory                string
+	repositorySuffix                string
+	extensionRepositoryArchitecture string
 }
 
 var desktopArchitectureDescriptors = map[DesktopArchitecture]desktopArchitectureDescriptor{
 	DesktopArchitectureMacClang64: {
-		host:             HostMac,
-		installDirectory: "macos",
+		host:                            HostMac,
+		installDirectory:                "macos",
+		extensionRepositoryArchitecture: "clang_64",
 	},
 	DesktopArchitectureLinuxGCC64: {
-		host:             HostLinux,
-		installDirectory: "gcc_64",
+		host:                            HostLinux,
+		installDirectory:                "gcc_64",
+		extensionRepositoryArchitecture: "x86_64",
 	},
 	DesktopArchitectureLinuxGCCARM64: {
-		host:             HostLinuxARM64,
-		installDirectory: "gcc_arm64",
+		host:                            HostLinuxARM64,
+		installDirectory:                "gcc_arm64",
+		extensionRepositoryArchitecture: "arm64",
 	},
 	DesktopArchitectureWindowsMSVC64: {
-		host:             HostWindows,
-		installDirectory: "msvc2022_64",
-		repositorySuffix: "msvc2022_64",
+		host:                            HostWindows,
+		installDirectory:                "msvc2022_64",
+		repositorySuffix:                "msvc2022_64",
+		extensionRepositoryArchitecture: "msvc2022_64",
 	},
 	DesktopArchitectureWindowsMSVCARM64: {
-		host:             HostWindowsARM64,
-		installDirectory: "msvc2022_arm64",
+		host:                            HostWindowsARM64,
+		installDirectory:                "msvc2022_arm64",
+		extensionRepositoryArchitecture: "msvc2022_arm64",
 	},
 }
 
@@ -90,4 +96,18 @@ func (architecture DesktopArchitecture) descriptor() (desktopArchitectureDescrip
 		)
 	}
 	return descriptor, nil
+}
+
+func (architecture DesktopArchitecture) extensionRepositoryArchitecture() (string, error) {
+	descriptor, err := architecture.descriptor()
+	if err != nil {
+		return "", err
+	}
+	if descriptor.extensionRepositoryArchitecture == "" {
+		return "", fmt.Errorf(
+			"desktop Qt architecture %q has no extension repository architecture",
+			architecture,
+		)
+	}
+	return descriptor.extensionRepositoryArchitecture, nil
 }

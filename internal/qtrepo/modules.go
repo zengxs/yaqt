@@ -18,8 +18,8 @@ type ModuleRequest struct {
 	AndroidABI          AndroidABI
 }
 
-// ListModules returns additional installable Qt modules for one package
-// variant, sorted by module name.
+// ListModules returns additional Qt modules available for one package variant,
+// sorted by module name.
 func (c *Client) ListModules(
 	ctx context.Context,
 	request ModuleRequest,
@@ -56,7 +56,24 @@ func (c *Client) ListModules(
 	); err != nil {
 		return nil, err
 	}
-	return availableModuleNames(packages, metadata, request.Version), nil
+	modules := availableModuleNames(packages, metadata, request.Version)
+	extensions, err := c.listExtensionModules(ctx, request, metadata)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(modules)+len(extensions))
+	for _, module := range modules {
+		seen[module] = struct{}{}
+	}
+	for _, module := range extensions {
+		if _, ok := seen[module]; ok {
+			continue
+		}
+		seen[module] = struct{}{}
+		modules = append(modules, module)
+	}
+	slices.Sort(modules)
+	return modules, nil
 }
 
 func desktopModuleVariant(request ModuleRequest) (packageVariantMetadata, error) {

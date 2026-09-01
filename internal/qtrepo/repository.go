@@ -95,7 +95,8 @@ type Repository struct {
 	Host   Host
 	Target Target
 
-	indexURL string
+	indexURL          string
+	repositoryRootURL string
 }
 
 // ParseHost validates a repository host name.
@@ -183,13 +184,16 @@ func NewRepository(baseURL string, host Host, target Target) (Repository, error)
 	}
 
 	parsed.Path = strings.TrimRight(parsed.Path, "/") +
-		"/online/qtsdkrepository/" + segment + "/" + string(target) + "/"
+		"/online/qtsdkrepository/" + segment + "/"
 	parsed.RawPath = ""
+	repositoryRootURL := parsed.String()
+	parsed.Path += string(target) + "/"
 
 	return Repository{
-		Host:     host,
-		Target:   target,
-		indexURL: parsed.String(),
+		Host:              host,
+		Target:            target,
+		indexURL:          parsed.String(),
+		repositoryRootURL: repositoryRootURL,
 	}, nil
 }
 

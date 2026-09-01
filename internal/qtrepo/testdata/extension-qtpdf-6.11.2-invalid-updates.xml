@@ -1,0 +1,7 @@
+<Updates>
+ <PackageUpdate>
+  <Name>extensions.qtpdf.6112.clang_64</Name>
+  <Version>6.11.2-0-test</Version>
+  <DownloadableArchives>qtpdf-macos.7z</DownloadableArchives>
+ </PackageUpdate>
+</Updates>
