@@ -1,0 +1,514 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Go validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Check formatting
+        run: |
+          go tool goimports -local github.com/zengxs/yaqt -w .
+          go tool gofumpt -w .
+          git diff --exit-code
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Run race detector
+        run: go test -race ./...
+
+      - name: Run vet
+        run: go vet ./...
+
+  build:
+    name: Build yaqt binaries
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build and package yaqt
+        env:
+          CGO_ENABLED: "0"
+        shell: bash
+        run: |
+          output_dir="${RUNNER_TEMP}/yaqt-binaries"
+          package_root="${RUNNER_TEMP}/yaqt-packages"
+          targets=(
+            "linux amd64 yaqt"
+            "linux arm64 yaqt"
+            "darwin amd64 yaqt"
+            "darwin arm64 yaqt"
+            "windows amd64 yaqt.exe"
+            "windows arm64 yaqt.exe"
+          )
+          mkdir -p "${output_dir}" "${package_root}"
+          for target in "${targets[@]}"; do
+            read -r goos goarch binary_name <<< "${target}"
+            package_dir="${package_root}/${goos}-${goarch}"
+            archive="${output_dir}/yaqt-${goos}-${goarch}.tar.gz"
+            mkdir -p "${package_dir}"
+            printf 'Building yaqt for %s/%s\n' "${goos}" "${goarch}"
+            GOOS="${goos}" GOARCH="${goarch}" \
+              go build -trimpath -o "${package_dir}/${binary_name}" ./cmd/yaqt
+            tar -C "${package_dir}" -czf "${archive}" "${binary_name}"
+          done
+
+      - name: Upload yaqt binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: yaqt-binaries
+          path: ${{ runner.temp }}/yaqt-binaries/*.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+  select-sdk-matrix:
+    name: Select Qt SDK scenarios
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Select scenarios
+        id: select
+        shell: bash
+        run: |
+          tier="full"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            tier="pull_request"
+          fi
+          matrix="$(jq --compact-output --arg tier "${tier}" '{include: .[$tier]}' .github/ci/sdk-matrix.json)"
+          printf 'matrix=%s\n' "${matrix}" >> "${GITHUB_OUTPUT}"
+
+  verify-sdk:
+    name: ${{ matrix.label }} Qt ${{ matrix.qt_version }}
+    if: >-
+      github.event_name == 'pull_request' ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/ci' ||
+      github.ref == 'refs/heads/main'
+    needs:
+      - build
+      - select-sdk-matrix
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.select-sdk-matrix.outputs.matrix) }}
+    env:
+      ARTIFACT_ARCH: ${{ matrix.artifact_arch }}
+      ARTIFACT_OS: ${{ matrix.artifact_os }}
+      QT_ARCHITECTURE: ${{ matrix.qt_architecture }}
+      QT_HOST: ${{ matrix.host }}
+      QT_KIT_DIRECTORY: ${{ matrix.kit_directory }}
+      QT_VERSION: ${{ matrix.qt_version }}
+      YAQT_BINARY_NAME: ${{ matrix.binary_name }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download yaqt binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: yaqt-binaries
+          path: ${{ runner.temp }}/yaqt-artifact
+
+      - name: Install Linux Qt development dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libgl1-mesa-dev
+
+      - name: Prepare yaqt and SDK paths
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          artifact_dir="${RUNNER_TEMP}/yaqt-artifact"
+          archive="${artifact_dir}/yaqt-${ARTIFACT_OS}-${ARTIFACT_ARCH}.tar.gz"
+          qt_root="${RUNNER_TEMP}/Qt"
+          qt_dir="${qt_root}/${QT_VERSION}/${QT_KIT_DIRECTORY}"
+          tar -xzf "${archive}" -C "${artifact_dir}"
+          test -x "${artifact_dir}/${YAQT_BINARY_NAME}"
+          {
+            printf 'YAQT_BIN=%s\n' "${artifact_dir}/${YAQT_BINARY_NAME}"
+            printf 'YAQT_CACHE_DIR=%s\n' "${RUNNER_TEMP}/yaqt-cache"
+            printf 'QT_ROOT=%s\n' "${qt_root}"
+            printf 'QT_DIR=%s\n' "${qt_dir}"
+            printf 'TEST_BUILD_ROOT=%s\n' "${RUNNER_TEMP}/test-build"
+            printf 'QT_QPA_PLATFORM=offscreen\n'
+            printf 'QT_PLUGIN_PATH=%s\n' "${qt_dir}/plugins"
+          } >> "${GITHUB_ENV}"
+          if [[ "${RUNNER_OS}" == "Linux" ]]; then
+            printf 'LD_LIBRARY_PATH=%s\n' "${qt_dir}/lib" >> "${GITHUB_ENV}"
+          else
+            printf 'DYLD_FRAMEWORK_PATH=%s\n' "${qt_dir}/lib" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Prepare yaqt and SDK paths
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $artifactDirectory = Join-Path $env:RUNNER_TEMP "yaqt-artifact"
+          $archive = Join-Path $artifactDirectory "yaqt-$env:ARTIFACT_OS-$env:ARTIFACT_ARCH.tar.gz"
+          $qtRoot = Join-Path $env:RUNNER_TEMP "Qt"
+          $qtDirectory = Join-Path (Join-Path $qtRoot $env:QT_VERSION) $env:QT_KIT_DIRECTORY
+          tar -xzf $archive -C $artifactDirectory
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not extract $archive"
+          }
+          $yaqt = Join-Path $artifactDirectory $env:YAQT_BINARY_NAME
+          if (-not (Test-Path -LiteralPath $yaqt -PathType Leaf)) {
+            throw "Missing yaqt binary at $yaqt"
+          }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "YAQT_BIN=$yaqt"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "YAQT_CACHE_DIR=$(Join-Path $env:RUNNER_TEMP 'yaqt-cache')"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "QT_ROOT=$qtRoot"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "QT_DIR=$qtDirectory"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "TEST_BUILD_ROOT=$(Join-Path $env:RUNNER_TEMP 'test-build')"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "QT_QPA_PLATFORM=offscreen"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "QT_PLUGIN_PATH=$(Join-Path $qtDirectory 'plugins')"
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value (Join-Path $qtDirectory "bin")
+
+      - name: Verify advertised architecture
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          architectures="$("${YAQT_BIN}" list-architectures "${QT_VERSION}" --host "${QT_HOST}" --target desktop)"
+          printf '%s\n' "${architectures}"
+          grep -Fx "${QT_ARCHITECTURE}" <<<"${architectures}"
+
+      - name: Verify advertised architecture
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $architectures = @(& $env:YAQT_BIN list-architectures $env:QT_VERSION --host $env:QT_HOST --target desktop)
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not list Qt architectures"
+          }
+          $architectures | Out-Host
+          if ($architectures -notcontains $env:QT_ARCHITECTURE) {
+            throw "Qt architecture $env:QT_ARCHITECTURE was not advertised"
+          }
+
+      - name: Install desktop Qt
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          "${YAQT_BIN}" install-qt "${QT_VERSION}" \
+            --host "${QT_HOST}" \
+            --target desktop \
+            --arch "${QT_ARCHITECTURE}" \
+            --root "${QT_ROOT}" \
+            --cache-dir "${YAQT_CACHE_DIR}"
+
+      - name: Install desktop Qt
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & $env:YAQT_BIN install-qt $env:QT_VERSION `
+            --host $env:QT_HOST `
+            --target desktop `
+            --arch $env:QT_ARCHITECTURE `
+            --root $env:QT_ROOT `
+            --cache-dir $env:YAQT_CACHE_DIR
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not install desktop Qt"
+          }
+
+      - name: Verify relocated desktop Qt
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          test "$("${QT_DIR}/bin/qtpaths6" --query QT_VERSION)" = "${QT_VERSION}"
+          test "$("${QT_DIR}/bin/qmake6" -query QT_VERSION)" = "${QT_VERSION}"
+          test "$("${QT_DIR}/bin/qtpaths6" --query QT_INSTALL_PREFIX)" = "${QT_DIR}"
+          test -s "${QT_DIR}/.yaqt/manifest.json"
+
+      - name: Verify relocated desktop Qt
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $qtpaths = Join-Path $env:QT_DIR "bin\qtpaths6.exe"
+          $qmake = Join-Path $env:QT_DIR "bin\qmake6.exe"
+          $qtpathsVersion = (& $qtpaths --query QT_VERSION).Trim()
+          if ($LASTEXITCODE -ne 0 -or $qtpathsVersion -ne $env:QT_VERSION) {
+            throw "qtpaths6 reported Qt $qtpathsVersion"
+          }
+          $qmakeVersion = (& $qmake -query QT_VERSION).Trim()
+          if ($LASTEXITCODE -ne 0 -or $qmakeVersion -ne $env:QT_VERSION) {
+            throw "qmake6 reported Qt $qmakeVersion"
+          }
+          $actualPrefix = [IO.Path]::GetFullPath((& $qtpaths --query QT_INSTALL_PREFIX).Trim())
+          $expectedPrefix = [IO.Path]::GetFullPath($env:QT_DIR)
+          if (-not [String]::Equals($actualPrefix, $expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "qtpaths6 reported prefix $actualPrefix, expected $expectedPrefix"
+          }
+          $manifest = Join-Path $env:QT_DIR ".yaqt\manifest.json"
+          if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+            throw "Missing manifest at $manifest"
+          }
+
+      - name: Build and run the CMake Hello project
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          build_dir="${TEST_BUILD_ROOT}/cmake-hello"
+          cmake \
+            -S "${GITHUB_WORKSPACE}/tests/cmake-hello" \
+            -B "${build_dir}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="${QT_DIR}"
+          cmake --build "${build_dir}" --config Release --parallel 2
+          "${build_dir}/yaqt-cmake-hello" "${QT_DIR}"
+
+      - name: Build and run the CMake Hello project
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $sourceDirectory = Join-Path $env:GITHUB_WORKSPACE "tests\cmake-hello"
+          $buildDirectory = Join-Path $env:TEST_BUILD_ROOT "cmake-hello"
+          cmake `
+            -S $sourceDirectory `
+            -B $buildDirectory `
+            -DCMAKE_BUILD_TYPE=Release `
+            "-DCMAKE_PREFIX_PATH=$env:QT_DIR"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not configure the CMake Hello project"
+          }
+          cmake --build $buildDirectory --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not build the CMake Hello project"
+          }
+          $application = Join-Path $buildDirectory "Release\yaqt-cmake-hello.exe"
+          & $application $env:QT_DIR
+          if ($LASTEXITCODE -ne 0) {
+            throw "The CMake Hello project failed"
+          }
+
+      - name: Verify repeated installation is satisfied
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          output="$("${YAQT_BIN}" install-qt "${QT_VERSION}" \
+            --host "${QT_HOST}" \
+            --target desktop \
+            --arch "${QT_ARCHITECTURE}" \
+            --root "${QT_ROOT}" \
+            --cache-dir "${YAQT_CACHE_DIR}" 2>&1)"
+          printf '%s\n' "${output}"
+          [[ "${output}" == *"Qt ${QT_VERSION} for desktop is already satisfied."* ]]
+
+      - name: Verify repeated installation is satisfied
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $output = (& $env:YAQT_BIN install-qt $env:QT_VERSION `
+            --host $env:QT_HOST `
+            --target desktop `
+            --arch $env:QT_ARCHITECTURE `
+            --root $env:QT_ROOT `
+            --cache-dir $env:YAQT_CACHE_DIR 2>&1 | Out-String)
+          $exitCode = $LASTEXITCODE
+          $output | Write-Host
+          if ($exitCode -ne 0) {
+            throw "Repeated desktop Qt installation failed"
+          }
+          if (-not $output.Contains("Qt $env:QT_VERSION for desktop is already satisfied.")) {
+            throw "Repeated desktop Qt installation was not satisfied"
+          }
+
+      - name: Verify incremental module plan
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          plan="$("${YAQT_BIN}" install-qt "${QT_VERSION}" \
+            --host "${QT_HOST}" \
+            --target desktop \
+            --arch "${QT_ARCHITECTURE}" \
+            --root "${QT_ROOT}" \
+            --cache-dir "${YAQT_CACHE_DIR}" \
+            --module qtimageformats \
+            --dry-run)"
+          printf '%s\n' "${plan}"
+          printf '%s\n' "${plan}" | grep -A 1 '^  base package:' | grep -F 'action: skip'
+          printf '%s\n' "${plan}" | grep -A 1 '^  module qtimageformats:' | grep -F 'action: install'
+
+      - name: Verify incremental module plan
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $plan = (& $env:YAQT_BIN install-qt $env:QT_VERSION `
+            --host $env:QT_HOST `
+            --target desktop `
+            --arch $env:QT_ARCHITECTURE `
+            --root $env:QT_ROOT `
+            --cache-dir $env:YAQT_CACHE_DIR `
+            --module qtimageformats `
+            --dry-run | Out-String)
+          $exitCode = $LASTEXITCODE
+          $plan | Write-Host
+          if ($exitCode -ne 0) {
+            throw "Could not plan the incremental module installation"
+          }
+          if ($plan -notmatch "(?m)^  base package:.*\r?\n    action: skip\r?$") {
+            throw "The base package would not be skipped"
+          }
+          if ($plan -notmatch "(?m)^  module qtimageformats:.*\r?\n    action: install\r?$") {
+            throw "qtimageformats would not be installed"
+          }
+
+      - name: Install qtimageformats incrementally
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          "${YAQT_BIN}" install-qt "${QT_VERSION}" \
+            --host "${QT_HOST}" \
+            --target desktop \
+            --arch "${QT_ARCHITECTURE}" \
+            --root "${QT_ROOT}" \
+            --cache-dir "${YAQT_CACHE_DIR}" \
+            --module qtimageformats
+          grep -F '"module": "qtimageformats"' "${QT_DIR}/.yaqt/manifest.json"
+
+      - name: Install qtimageformats incrementally
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & $env:YAQT_BIN install-qt $env:QT_VERSION `
+            --host $env:QT_HOST `
+            --target desktop `
+            --arch $env:QT_ARCHITECTURE `
+            --root $env:QT_ROOT `
+            --cache-dir $env:YAQT_CACHE_DIR `
+            --module qtimageformats
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not install qtimageformats"
+          }
+          $manifestPath = Join-Path $env:QT_DIR ".yaqt\manifest.json"
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+          $module = $manifest.packages.PSObject.Properties.Value |
+            Where-Object { $_.module -eq "qtimageformats" }
+          if ($null -eq $module) {
+            throw "The manifest does not record qtimageformats"
+          }
+
+      - name: Build and run the qtimageformats WebP project
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          build_dir="${TEST_BUILD_ROOT}/qtimageformats-webp"
+          cmake \
+            -S "${GITHUB_WORKSPACE}/tests/qtimageformats-webp" \
+            -B "${build_dir}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="${QT_DIR}"
+          cmake --build "${build_dir}" --config Release --parallel 2
+          "${build_dir}/yaqt-qtimageformats-webp"
+
+      - name: Build and run the qtimageformats WebP project
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $sourceDirectory = Join-Path $env:GITHUB_WORKSPACE "tests\qtimageformats-webp"
+          $buildDirectory = Join-Path $env:TEST_BUILD_ROOT "qtimageformats-webp"
+          cmake `
+            -S $sourceDirectory `
+            -B $buildDirectory `
+            -DCMAKE_BUILD_TYPE=Release `
+            "-DCMAKE_PREFIX_PATH=$env:QT_DIR"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not configure the qtimageformats WebP project"
+          }
+          cmake --build $buildDirectory --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not build the qtimageformats WebP project"
+          }
+          $application = Join-Path $buildDirectory "Release\yaqt-qtimageformats-webp.exe"
+          & $application
+          if ($LASTEXITCODE -ne 0) {
+            throw "The qtimageformats WebP project failed"
+          }
+
+      - name: Verify repeated module installation is satisfied
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          output="$("${YAQT_BIN}" install-qt "${QT_VERSION}" \
+            --host "${QT_HOST}" \
+            --target desktop \
+            --arch "${QT_ARCHITECTURE}" \
+            --root "${QT_ROOT}" \
+            --cache-dir "${YAQT_CACHE_DIR}" \
+            --module qtimageformats 2>&1)"
+          printf '%s\n' "${output}"
+          [[ "${output}" == *"Qt ${QT_VERSION} for desktop is already satisfied."* ]]
+
+      - name: Verify repeated module installation is satisfied
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $output = (& $env:YAQT_BIN install-qt $env:QT_VERSION `
+            --host $env:QT_HOST `
+            --target desktop `
+            --arch $env:QT_ARCHITECTURE `
+            --root $env:QT_ROOT `
+            --cache-dir $env:YAQT_CACHE_DIR `
+            --module qtimageformats 2>&1 | Out-String)
+          $exitCode = $LASTEXITCODE
+          $output | Write-Host
+          if ($exitCode -ne 0) {
+            throw "Repeated qtimageformats installation failed"
+          }
+          if (-not $output.Contains("Qt $env:QT_VERSION for desktop is already satisfied.")) {
+            throw "Repeated qtimageformats installation was not satisfied"
+          }

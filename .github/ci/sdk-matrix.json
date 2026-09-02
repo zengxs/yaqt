@@ -1,0 +1,83 @@
+{
+  "pull_request": [
+    {
+      "label": "macOS",
+      "runner": "macos-15",
+      "artifact_os": "darwin",
+      "artifact_arch": "arm64",
+      "binary_name": "yaqt",
+      "host": "mac",
+      "qt_architecture": "clang_64",
+      "kit_directory": "macos",
+      "qt_version": "6.11.2"
+    }
+  ],
+  "full": [
+    {
+      "label": "macOS",
+      "runner": "macos-15",
+      "artifact_os": "darwin",
+      "artifact_arch": "arm64",
+      "binary_name": "yaqt",
+      "host": "mac",
+      "qt_architecture": "clang_64",
+      "kit_directory": "macos",
+      "qt_version": "6.8.0"
+    },
+    {
+      "label": "macOS",
+      "runner": "macos-15",
+      "artifact_os": "darwin",
+      "artifact_arch": "arm64",
+      "binary_name": "yaqt",
+      "host": "mac",
+      "qt_architecture": "clang_64",
+      "kit_directory": "macos",
+      "qt_version": "6.11.2"
+    },
+    {
+      "label": "Linux",
+      "runner": "ubuntu-24.04",
+      "artifact_os": "linux",
+      "artifact_arch": "amd64",
+      "binary_name": "yaqt",
+      "host": "linux",
+      "qt_architecture": "linux_gcc_64",
+      "kit_directory": "gcc_64",
+      "qt_version": "6.8.0"
+    },
+    {
+      "label": "Linux",
+      "runner": "ubuntu-24.04",
+      "artifact_os": "linux",
+      "artifact_arch": "amd64",
+      "binary_name": "yaqt",
+      "host": "linux",
+      "qt_architecture": "linux_gcc_64",
+      "kit_directory": "gcc_64",
+      "qt_version": "6.11.2"
+    },
+    {
+      "label": "Windows",
+      "runner": "windows-2022",
+      "artifact_os": "windows",
+      "artifact_arch": "amd64",
+      "binary_name": "yaqt.exe",
+      "host": "windows",
+      "qt_architecture": "win64_msvc2022_64",
+      "kit_directory": "msvc2022_64",
+      "qt_version": "6.8.0"
+    },
+    {
+      "label": "Windows",
+      "runner": "windows-2022",
+      "artifact_os": "windows",
+      "artifact_arch": "amd64",
+      "binary_name": "yaqt.exe",
+      "host": "windows",
+      "qt_architecture": "win64_msvc2022_64",
+      "kit_directory": "msvc2022_64",
+      "qt_version": "6.11.2"
+    }
+  ]
+}

@@ -22,7 +22,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	client := qtrepo.NewClient(&http.Client{Timeout: 30 * time.Second})
+	client := qtrepo.NewClient(&http.Client{Timeout: 10 * time.Second})
 	installDependencies := installCommandDependencies{
 		resolver: client,
 		fetcherFactory: func(cacheDir string) (archiveFetcher, error) {
