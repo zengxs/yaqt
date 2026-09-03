@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/zengxs/yaqt/internal/filelock"
 	"github.com/zengxs/yaqt/internal/httpclient"
 	"github.com/zengxs/yaqt/internal/qtrepo"
 )
@@ -83,10 +84,11 @@ func (store *ArchiveStore) Fetch(ctx context.Context, archive qtrepo.Archive) (s
 		return "", fmt.Errorf("create archive cache lock directory %s: %w", lockDir, err)
 	}
 	lockPath := filepath.Join(lockDir, expected+".lock")
-	if _, err := cacheRoot.inspectFile(lockPath, "archive cache lock"); err != nil {
-		return "", err
+	relativeLockPath, err := cacheRoot.relativePath(lockPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve archive cache lock %s: %w", lockPath, err)
 	}
-	lockFile, err := cacheRoot.openFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	lockFile, err := filelock.OpenFile(cacheRoot.root, relativeLockPath, 0o644)
 	if err != nil {
 		return "", fmt.Errorf("open archive cache lock %s: %w", lockPath, err)
 	}
@@ -119,12 +121,12 @@ func withArchiveCacheLock(
 	lockPath string,
 	operation func() (string, error),
 ) (result string, resultErr error) {
-	lock, err := acquireAdvisoryFileLock(ctx, file, nil)
+	lock, err := filelock.Acquire(ctx, file, nil)
 	if err != nil {
 		return "", fmt.Errorf("lock archive cache entry %s: %w", lockPath, err)
 	}
 	defer func() {
-		if err := lock.release(); err != nil {
+		if err := lock.Release(); err != nil {
 			resultErr = errors.Join(resultErr, fmt.Errorf("release archive cache lock: %w", err))
 		}
 	}()

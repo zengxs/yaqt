@@ -12,6 +12,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	yaqtcache "github.com/zengxs/yaqt/internal/cache"
 	"github.com/zengxs/yaqt/internal/qtrepo"
 )
 
@@ -24,6 +25,7 @@ type stubRepositoryClient struct {
 	moduleRequest       qtrepo.ModuleRequest
 	installRequest      qtrepo.InstallRequest
 	installPlan         qtrepo.InstallPlan
+	cacheRoot           string
 }
 
 type stubArchiveFetcher struct {
@@ -108,33 +110,41 @@ func (stub *stubInstallRelocator) Relocate(_ context.Context, kitDir string) err
 	return nil
 }
 
-func (stub *stubRepositoryClient) ListVersions(_ context.Context, repository qtrepo.Repository) ([]qtrepo.Version, error) {
+func (stub *stubRepositoryClient) ListVersions(ctx context.Context, repository qtrepo.Repository) ([]qtrepo.Version, error) {
+	stub.captureCacheRoot(ctx)
 	stub.repository = repository
 	return stub.versions, nil
 }
 
 func (stub *stubRepositoryClient) ListArchitectures(
-	_ context.Context,
+	ctx context.Context,
 	request qtrepo.ArchitectureRequest,
 ) ([]string, error) {
+	stub.captureCacheRoot(ctx)
 	stub.architectureRequest = request
 	return stub.architectures, nil
 }
 
 func (stub *stubRepositoryClient) ListModules(
-	_ context.Context,
+	ctx context.Context,
 	request qtrepo.ModuleRequest,
 ) ([]string, error) {
+	stub.captureCacheRoot(ctx)
 	stub.moduleRequest = request
 	return stub.modules, nil
 }
 
 func (stub *stubRepositoryClient) ResolveInstall(
-	_ context.Context,
+	ctx context.Context,
 	request qtrepo.InstallRequest,
 ) (qtrepo.InstallPlan, error) {
+	stub.captureCacheRoot(ctx)
 	stub.installRequest = request
 	return stub.installPlan, nil
+}
+
+func (stub *stubRepositoryClient) captureCacheRoot(ctx context.Context) {
+	stub.cacheRoot, _ = yaqtcache.RootFromContext(ctx)
 }
 
 func cleanInstallTestRoot(t *testing.T, name string) string {
@@ -157,6 +167,7 @@ func cleanInstallTestRoot(t *testing.T, name string) string {
 
 func TestListQtCommand(t *testing.T) {
 	output := &bytes.Buffer{}
+	cacheRoot := filepath.Join(".tmp", "list-qt-cache")
 	lister := &stubRepositoryClient{
 		versions: []qtrepo.Version{
 			{Major: 6, Minor: 8, Patch: 0},
@@ -175,6 +186,7 @@ func TestListQtCommand(t *testing.T) {
 		"list-qt",
 		"--target", "wasm",
 		"--base-url", "https://mirror.example/qt",
+		"--cache-dir", cacheRoot,
 	})
 	if err != nil {
 		t.Fatalf("command.Run() error = %v", err)
@@ -185,6 +197,9 @@ func TestListQtCommand(t *testing.T) {
 	}
 	if got, want := lister.repository.IndexURL(), "https://mirror.example/qt/online/qtsdkrepository/all_os/wasm/"; got != want {
 		t.Fatalf("repository URL = %q, want %q", got, want)
+	}
+	if got, want := lister.cacheRoot, filepath.Clean(cacheRoot); got != want {
+		t.Fatalf("cache root = %q, want %q", got, want)
 	}
 }
 
@@ -603,6 +618,9 @@ func TestInstallQtDownloadOnlyUsesExplicitCacheDirectory(t *testing.T) {
 	}
 	if got, want := factoryCacheDir, filepath.Clean(cacheDir); got != want {
 		t.Errorf("archive fetcher cache directory = %q, want %q", got, want)
+	}
+	if got, want := client.cacheRoot, filepath.Clean(cacheDir); got != want {
+		t.Errorf("repository cache root = %q, want %q", got, want)
 	}
 	if got, want := fetcher.archives, []qtrepo.Archive{archive}; len(got) != len(want) || got[0] != want[0] {
 		t.Errorf("fetched archives = %v, want %v", got, want)

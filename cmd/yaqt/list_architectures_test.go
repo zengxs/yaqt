@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/zengxs/yaqt/internal/qtrepo"
@@ -10,6 +11,7 @@ import (
 
 func TestListArchitecturesCommand(t *testing.T) {
 	output := &bytes.Buffer{}
+	cacheRoot := filepath.Join(".tmp", "list-architectures-cache")
 	client := &stubRepositoryClient{
 		architectures: []string{"win64_mingw", "win64_msvc2022_64"},
 	}
@@ -27,6 +29,7 @@ func TestListArchitecturesCommand(t *testing.T) {
 		"--host", "windows",
 		"--target", "desktop",
 		"--base-url", "https://mirror.example/qt",
+		"--cache-dir", cacheRoot,
 	})
 	if err != nil {
 		t.Fatalf("command.Run() error = %v", err)
@@ -40,6 +43,9 @@ func TestListArchitecturesCommand(t *testing.T) {
 	}
 	if got, want := request.Version.String(), "6.11.2"; got != want {
 		t.Errorf("version = %q, want %q", got, want)
+	}
+	if got, want := client.cacheRoot, filepath.Clean(cacheRoot); got != want {
+		t.Errorf("cache root = %q, want %q", got, want)
 	}
 }
 

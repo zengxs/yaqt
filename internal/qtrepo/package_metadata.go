@@ -105,6 +105,7 @@ func (metadata packageVariantMetadata) modulePackageNames(module string) [2]stri
 }
 
 type updatesDocument struct {
+	XMLName  xml.Name        `xml:"Updates"`
 	Packages []packageUpdate `xml:"PackageUpdate"`
 }
 
@@ -124,18 +125,25 @@ func (c *Client) fetchPackageUpdates(
 	ctx context.Context,
 	metadataURL string,
 ) (map[string]packageUpdate, error) {
-	metadata, err := c.fetchResource(ctx, metadataURL, packageMetadataResource)
+	var packages map[string]packageUpdate
+	err := c.readResource(
+		ctx,
+		metadataURL,
+		packageMetadataResource,
+		func(metadata []byte) error {
+			var updates updatesDocument
+			if err := xml.Unmarshal(metadata, &updates); err != nil {
+				return fmt.Errorf("parse Qt package metadata %s: %w", metadataURL, err)
+			}
+			packages = make(map[string]packageUpdate, len(updates.Packages))
+			for _, update := range updates.Packages {
+				packages[strings.TrimSpace(update.Name)] = update
+			}
+			return nil
+		},
+	)
 	if err != nil {
 		return nil, err
-	}
-
-	var updates updatesDocument
-	if err := xml.Unmarshal(metadata, &updates); err != nil {
-		return nil, fmt.Errorf("parse Qt package metadata %s: %w", metadataURL, err)
-	}
-	packages := make(map[string]packageUpdate, len(updates.Packages))
-	for _, update := range updates.Packages {
-		packages[strings.TrimSpace(update.Name)] = update
 	}
 	return packages, nil
 }

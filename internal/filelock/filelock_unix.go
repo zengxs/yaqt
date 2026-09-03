@@ -1,6 +1,6 @@
 //go:build darwin || linux
 
-package qtinstall
+package filelock
 
 import (
 	"errors"
@@ -9,7 +9,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func tryFileLock(file *os.File) (func() error, bool, error) {
+func tryLock(file *os.File) (func() error, bool, error) {
 	err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 	if err == nil {
 		return func() error {

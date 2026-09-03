@@ -153,7 +153,8 @@ provisioning profiles. After installation, use
 official [Qt for iOS guide](https://doc.qt.io/qt-6/ios.html) for Xcode and
 deployment requirements.
 
-Plan an Android installation without downloading or changing any files:
+Plan an Android installation without downloading archives or changing the Qt
+installation:
 
 ```console
 $ yaqt install-qt 6.8.0 \
@@ -199,7 +200,7 @@ The dry run reads `Updates.xml`, groups selected archives by their base or modul
 package, resolves the exact archive and checksum URLs, honors archive-specific
 extraction paths, reports the matching desktop Qt requirement, and labels every
 selected package as `install`, `update`, `skip`, or `adopt` according to the
-current kit state.
+current kit state. It may populate or refresh the repository metadata cache.
 
 Download and verify the selected archives without extracting them:
 
@@ -211,10 +212,17 @@ $ yaqt install-qt 6.8.0 \
     --download-only
 ```
 
-Verified archives are stored in a content-addressed cache. Use `--cache-dir` to
-select its root, or set `YAQT_CACHE_DIR`. Otherwise, yaqt uses the operating
-system's user cache directory. Concurrent requests for the same SHA-256 digest
-share a cache-entry lock, so only one process downloads that archive.
+Repository metadata and verified archives share one yaqt cache root. Use
+`--cache-dir` with any repository command to select it, or set
+`YAQT_CACHE_DIR`. Otherwise, yaqt uses the operating system's user cache
+directory.
+
+Successfully parsed directory indexes and `Updates.xml` responses are cached by
+request URL under `<cache>/metadata/sha256` for 15 minutes. Expired or corrupt
+entries are fetched again. Verified archives are stored by content digest under
+`<cache>/downloads/sha256` and remain available until removed by the user.
+Concurrent requests for the same metadata URL or archive digest share an
+operating system lock, so only one process performs the corresponding download.
 
 Stop after extraction when inspecting or diagnosing the unrelocated archive
 contents:

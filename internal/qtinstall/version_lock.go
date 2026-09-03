@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/zengxs/yaqt/internal/filelock"
 	"github.com/zengxs/yaqt/internal/qtrepo"
 )
 
@@ -33,7 +34,7 @@ func withVersionLock(
 		return err
 	}
 	defer func() {
-		if err := lock.release(); err != nil {
+		if err := lock.Release(); err != nil {
 			resultErr = errors.Join(
 				resultErr,
 				fmt.Errorf("release Qt %s installation lock: %w", version, err),
@@ -48,7 +49,7 @@ func acquireVersionLock(
 	root string,
 	version qtrepo.Version,
 	onWait func() error,
-) (*advisoryFileLock, error) {
+) (*filelock.Lock, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("acquire Qt %s installation lock: %w", version, err)
 	}
@@ -62,19 +63,20 @@ func acquireVersionLock(
 		return nil, fmt.Errorf("create Qt %s installation state directory: %w", version, err)
 	}
 	lockPath := filepath.Join(stateDirectory, "install.lock")
-	if _, err := managedRoot.inspectFile(lockPath, "Qt version lock"); err != nil {
-		return nil, fmt.Errorf("inspect Qt %s installation lock: %w", version, err)
+	relativeLockPath, err := managedRoot.relativePath(lockPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve Qt %s installation lock %s: %w", version, lockPath, err)
 	}
-	file, err := managedRoot.openFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	file, err := filelock.OpenFile(managedRoot.root, relativeLockPath, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open Qt %s installation lock %s: %w", version, lockPath, err)
 	}
-	lock, err := acquireAdvisoryFileLock(ctx, file, onWait)
+	lock, err := filelock.Acquire(ctx, file, onWait)
 	if err != nil {
 		return nil, fmt.Errorf("lock Qt %s installation: %w", version, err)
 	}
 	if err := writeVersionLockMetadata(file); err != nil {
-		if releaseErr := lock.release(); releaseErr != nil {
+		if releaseErr := lock.Release(); releaseErr != nil {
 			err = errors.Join(err, releaseErr)
 		}
 		return nil, fmt.Errorf("write Qt %s installation lock metadata: %w", version, err)

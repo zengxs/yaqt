@@ -19,7 +19,7 @@ func newListModulesCommand(
 	defaultHost qtrepo.Host,
 	output io.Writer,
 ) *cli.Command {
-	return &cli.Command{
+	return withRepositoryCache(&cli.Command{
 		Name:      "list-modules",
 		Usage:     "List additional Qt modules available for a package variant",
 		ArgsUsage: "VERSION",
@@ -85,5 +85,5 @@ func newListModulesCommand(
 			}
 			return nil
 		},
-	}
+	})
 }

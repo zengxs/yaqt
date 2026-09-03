@@ -1,6 +1,6 @@
 //go:build windows
 
-package qtinstall
+package filelock
 
 import (
 	"errors"
@@ -9,7 +9,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func tryFileLock(file *os.File) (func() error, bool, error) {
+func tryLock(file *os.File) (func() error, bool, error) {
 	overlapped := &windows.Overlapped{}
 	err := windows.LockFileEx(
 		windows.Handle(file.Fd()),

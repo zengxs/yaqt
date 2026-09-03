@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/zengxs/yaqt/internal/qtrepo"
@@ -10,6 +11,7 @@ import (
 
 func TestListModulesDesktopCommandUsesNativeArchitecture(t *testing.T) {
 	output := &bytes.Buffer{}
+	cacheRoot := filepath.Join(".tmp", "list-modules-cache")
 	client := &stubRepositoryClient{modules: []string{"qtcharts", "qtmultimedia"}}
 	command := newCommand(
 		commandDependencies{moduleLister: client},
@@ -23,6 +25,7 @@ func TestListModulesDesktopCommandUsesNativeArchitecture(t *testing.T) {
 		"list-modules",
 		"6.11.2",
 		"--base-url", "https://mirror.example/qt",
+		"--cache-dir", cacheRoot,
 	})
 	if err != nil {
 		t.Fatalf("command.Run() error = %v", err)
@@ -39,6 +42,9 @@ func TestListModulesDesktopCommandUsesNativeArchitecture(t *testing.T) {
 	}
 	if got, want := request.DesktopArchitecture, qtrepo.DesktopArchitectureMacClang64; got != want {
 		t.Errorf("desktop architecture = %q, want %q", got, want)
+	}
+	if got, want := client.cacheRoot, filepath.Clean(cacheRoot); got != want {
+		t.Errorf("cache root = %q, want %q", got, want)
 	}
 }
 

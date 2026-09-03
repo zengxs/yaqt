@@ -19,7 +19,7 @@ func newListArchitecturesCommand(
 	defaultHost qtrepo.Host,
 	output io.Writer,
 ) *cli.Command {
-	return &cli.Command{
+	return withRepositoryCache(&cli.Command{
 		Name:      "list-architectures",
 		Usage:     "List Qt package architectures available for a release",
 		ArgsUsage: "VERSION",
@@ -71,5 +71,5 @@ func newListArchitecturesCommand(
 			}
 			return nil
 		},
-	}
+	})
 }

@@ -109,10 +109,34 @@ func (c *Client) architectureMetadataURLs(
 		return nil, fmt.Errorf("construct Qt %s repository URL: %w", version, err)
 	}
 	outerURL = strings.TrimSuffix(outerURL, "/") + "/"
-	index, err := c.fetchResource(ctx, outerURL, repositoryIndexResource)
+	var metadataURLs []string
+	err = c.readResource(
+		ctx,
+		outerURL,
+		repositoryIndexResource,
+		func(index []byte) error {
+			var err error
+			metadataURLs, err = architectureMetadataURLsFromIndex(
+				index,
+				outerURL,
+				versionDirectory,
+				version,
+			)
+			return err
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
+	return metadataURLs, nil
+}
+
+func architectureMetadataURLsFromIndex(
+	index []byte,
+	outerURL string,
+	versionDirectory string,
+	version Version,
+) ([]string, error) {
 	children, err := parseRepositoryChildNames(bytes.NewReader(index))
 	if err != nil {
 		return nil, fmt.Errorf("parse Qt repository index %s: %w", outerURL, err)

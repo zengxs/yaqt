@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/zengxs/yaqt/internal/cache"
 	"github.com/zengxs/yaqt/internal/qtrepo"
 )
 
@@ -167,7 +168,7 @@ func (installer *Installer) materializeLocked(
 		if installer.fetcherFactory == nil {
 			return fmt.Errorf("archive downloader is not configured")
 		}
-		cacheDir, err := ResolveCacheDir(request.CacheDir)
+		cacheDir, err := cache.ResolveRoot(request.CacheDir)
 		if err != nil {
 			return err
 		}

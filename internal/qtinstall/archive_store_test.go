@@ -395,44 +395,6 @@ func TestArchiveStoreRejectsUnsupportedChecksumAlgorithmBeforeRequest(t *testing
 	}
 }
 
-func TestResolveCacheDirPrecedence(t *testing.T) {
-	environmentDir := filepath.Join(newTestCacheDir(t), "environment")
-	t.Setenv(cacheDirEnvironmentVariable, environmentDir)
-
-	explicitDir := filepath.Join(newTestCacheDir(t), "explicit")
-	got, err := ResolveCacheDir(explicitDir)
-	if err != nil {
-		t.Fatalf("ResolveCacheDir(explicit) error = %v", err)
-	}
-	if got != filepath.Clean(explicitDir) {
-		t.Errorf("ResolveCacheDir(explicit) = %q, want %q", got, filepath.Clean(explicitDir))
-	}
-
-	got, err = ResolveCacheDir("")
-	if err != nil {
-		t.Fatalf("ResolveCacheDir(environment) error = %v", err)
-	}
-	if got != filepath.Clean(environmentDir) {
-		t.Errorf("ResolveCacheDir(environment) = %q, want %q", got, filepath.Clean(environmentDir))
-	}
-}
-
-func TestResolveCacheDirUsesOperatingSystemCache(t *testing.T) {
-	t.Setenv(cacheDirEnvironmentVariable, "")
-	wantRoot, err := os.UserCacheDir()
-	if err != nil {
-		t.Fatalf("os.UserCacheDir() error = %v", err)
-	}
-
-	got, err := ResolveCacheDir("")
-	if err != nil {
-		t.Fatalf("ResolveCacheDir() error = %v", err)
-	}
-	if want := filepath.Join(wantRoot, "yaqt"); got != want {
-		t.Errorf("ResolveCacheDir() = %q, want %q", got, want)
-	}
-}
-
 func assertNoPartialFiles(t *testing.T, directory string) {
 	t.Helper()
 	entries, err := os.ReadDir(directory)

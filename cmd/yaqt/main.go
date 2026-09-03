@@ -11,6 +11,7 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"github.com/zengxs/yaqt/internal/buildinfo"
+	"github.com/zengxs/yaqt/internal/cache"
 	"github.com/zengxs/yaqt/internal/qtinstall"
 	"github.com/zengxs/yaqt/internal/qtrepo"
 )
@@ -22,7 +23,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	client := qtrepo.NewClient(&http.Client{Timeout: 10 * time.Second})
+	client := qtrepo.NewCachedClient(&http.Client{Timeout: 10 * time.Second})
 	installDependencies := installCommandDependencies{
 		resolver: client,
 		fetcherFactory: func(cacheDir string) (archiveFetcher, error) {
@@ -116,7 +117,7 @@ func newCommand(
 }
 
 func newListQtCommand(lister versionLister, defaultHost qtrepo.Host, output io.Writer) *cli.Command {
-	return &cli.Command{
+	return withRepositoryCache(&cli.Command{
 		Name:        "list-qt",
 		Usage:       "List supported Qt versions available in a repository",
 		Description: "The command reads the selected repository's directory index and prints stable Qt 6.8.0 or newer releases, one per line in ascending order.",
@@ -157,7 +158,7 @@ func newListQtCommand(lister versionLister, defaultHost qtrepo.Host, output io.W
 			}
 			return nil
 		},
-	}
+	})
 }
 
 func newInstallQtCommand(
@@ -165,7 +166,7 @@ func newInstallQtCommand(
 	defaultHost qtrepo.Host,
 	output io.Writer,
 ) *cli.Command {
-	return &cli.Command{
+	return withRepositoryCache(&cli.Command{
 		Name:      "install-qt",
 		Usage:     "Install or incrementally update a Qt SDK installation",
 		ArgsUsage: "VERSION",
@@ -206,13 +207,9 @@ func newInstallQtCommand(
 				Value: qtrepo.DefaultBaseURL,
 				Usage: "Qt download server or mirror `URL`",
 			},
-			&cli.StringFlag{
-				Name:  "cache-dir",
-				Usage: "Archive cache root `DIR`; defaults to YAQT_CACHE_DIR or the operating system cache",
-			},
 			&cli.BoolFlag{
 				Name:  "dry-run",
-				Usage: "Print the installation plan without changing the filesystem",
+				Usage: "Print the installation plan without downloading archives or changing the Qt installation",
 			},
 			&cli.BoolFlag{
 				Name:  "download-only",
@@ -264,6 +261,10 @@ func newInstallQtCommand(
 			if err != nil {
 				return err
 			}
+			cacheRoot, ok := cache.RootFromContext(ctx)
+			if !ok {
+				return fmt.Errorf("yaqt cache root is not configured")
+			}
 			plan, err := dependencies.resolver.ResolveInstall(ctx, request)
 			if err != nil {
 				return err
@@ -304,13 +305,37 @@ func newInstallQtCommand(
 						Target:  plan.Target,
 					},
 					Root:     installRoot,
-					CacheDir: command.String("cache-dir"),
+					CacheDir: cacheRoot,
 					Kits:     kits,
 					Mode:     materializationMode,
 				},
 			)
 		},
+	})
+}
+
+func withRepositoryCache(command *cli.Command) *cli.Command {
+	command.Flags = append(command.Flags, &cli.StringFlag{
+		Name: "cache-dir",
+		Usage: "yaqt cache root `DIR`; defaults to YAQT_CACHE_DIR or the operating " +
+			"system cache",
+	})
+	previousBefore := command.Before
+	command.Before = func(ctx context.Context, command *cli.Command) (context.Context, error) {
+		if previousBefore != nil {
+			var err error
+			ctx, err = previousBefore(ctx, command)
+			if err != nil {
+				return nil, err
+			}
+		}
+		root, err := cache.ResolveRoot(command.String("cache-dir"))
+		if err != nil {
+			return nil, err
+		}
+		return cache.ContextWithRoot(ctx, root), nil
 	}
+	return command
 }
 
 func requestedInstallExecutionMode(command *cli.Command) (installExecutionMode, error) {
